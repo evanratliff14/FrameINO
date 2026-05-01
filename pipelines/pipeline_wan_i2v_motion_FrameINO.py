@@ -826,7 +826,7 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                 if self.config.expand_timesteps:
 
                     # Multiply with the mask, such that the first frame latent of the model input is the clean latent of the first frame condition (Here, for Frame INO, the first frame should be masked outpainting design)
-                    latent_model_input = (1 - first_frame_mask) * condition + first_frame_mask * latents    # NOTE: 现在first frame应该设定为带masked的first frame（有outpainting的样式的）
+                    latent_model_input = (1 - first_frame_mask) * condition + first_frame_mask * latents  
                     latent_model_input = latent_model_input.to(transformer_dtype)
 
                     # Add padding for the first_frame_mask here with the length of ID tokens
