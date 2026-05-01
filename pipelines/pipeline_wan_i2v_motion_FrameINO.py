@@ -846,7 +846,6 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
 
                     latent_model_input = torch.cat([latents, condition], dim=1).to(transformer_dtype)
                     timestep = t.expand(latents.shape[0])
-                # TODO: 我现在不是特别确定这里的timestep 跟training的align了吗？
 
 
                 # Frame-Wise concatenate ID tokens
