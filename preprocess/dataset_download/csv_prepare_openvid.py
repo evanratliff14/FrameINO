@@ -12,10 +12,10 @@ import json
 if __name__ == "__main__":
 
     # Important Setting
-    video_parent_path = "/PATH/TO/OpenVid"     # Input
-    csv_file_path = "/PATH/TO/OpenVid/data/train/OpenVid-1M.csv"      # Input (Should be downloaded with video dataset folder)
-    store_csv_folder = "/PATH/TO/CSV_FOLDER/general_dataset_raw"       # Output
-    division_num = 1       # Sub CSV number  (We set to 1 here, but usually I set to 32 to process 32 GPU in parallel by GPU_offset in the argument of the following preprocessing codes)
+    video_parent_path = "/scratch/uft5by/OpenVid-1M/videos"     # Input
+    csv_file_path = "/scratch/uft5by/OpenVid-1M/metadata/train/OpenVid-1M.csv"      # Input (Should be downloaded with video dataset folder)
+    store_csv_folder = "/scratch/uft5by/OpenVid-1M/csv/general_dataset_raw"       # Output
+    division_num = 32       # Sub CSV number  (We set to 1 here, but usually I set to 32 to process 32 GPU in parallel by GPU_offset in the argument of the following preprocessing codes)
 
 
     # Other Setting

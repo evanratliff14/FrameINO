@@ -12,12 +12,19 @@
 <br>
 <br>
 
+0. Create HF account and set your read access token in your environment.
 
+hf download nkp37/OpenVid-1M --repo-type dataset --exclude "OpenVidHD/*" --local-dir scratch/uft5by/OpenVid-1M
+```shell
+export HF_XET_HIGH_PERFORMANCE=1 # Optional
+export HF_HOME="path/to/hf_cache" # Set the location that tracks the download progress
+export HF_CACHE_HUB"path/to/hf_file_cache" # If your home directory has a storage limit
+ls /scratch/id/path/to/*.zip | xargs -n 1 -P 40 -I {} sh -c 'unzip -q "{}" -d "$(dirname "{}")" && rm "{}"'```
 
-1. Provide OpenVid-1M example of the dataset download from HuggingFace (Please check the code carefully to adapt your environment!)
+1. Provide OpenVid-1M example of the dataset download from HuggingFace (Please check the code carefully to adapt your environment!).
 ```shell
     # Dataset Download
-    python preprocess/dataset_download/openvid_download.py --start_zip_idx 0 --end_zip_idx 186 --output_directory /PATH/TO/OpenVid
+    python preprocess/dataset_download/openvid_download.py --start_zip_idx 0 --end_zip_idx 186 --output_directory /scratch/uft5by/datasets
 
     # Initial CSV Prepare   
     python preprocess/dataset_download/csv_prepare_openvid.py
@@ -25,9 +32,9 @@
 <br>
 <br>
 
-2. Check the validity of the videos (No need for the GPU)
+2. Check the validity of the videos. Put your cpu # cores as *n*
 ```shell
-    python preprocess/filter_basic.py            
+  python preprocess/filter_basic.py --num_workersn n 
 ```
 <br>
 <br>
