@@ -85,6 +85,7 @@ def single_process( csv_folder_path,
         OCR_reader = easyocr.Reader(lang_choices)
 
     if "Image_Quality_Assessment" in scoring_criteria:
+        # pip install setuptools==81.0.0 if encountering issue with pkg_resources
         import pyiqa
         iqa_metric = pyiqa.create_metric('clipiqa+', device=device)
     
@@ -94,7 +95,7 @@ def single_process( csv_folder_path,
     if "Image_Complexity" in scoring_criteria:
         from preprocess.auxiliary.ICNet import ICNet
         img_complexity_model = ICNet()
-        img_complexity_path = '../pretrained/ck.pth'  # wget https://huggingface.co/incantor/image_complexity_ic9600/resolve/main/ck.pth?download=true
+        img_complexity_path = '/home/uft5by/FrameINO/preprocess/pretrained/ck.pth'  # https://drive.google.com/drive/folders/1N3FSS91e7FkJWUKqT96y_zcsG9CRuIJw
         
         if not os.path.exists(img_complexity_path):
             if not os.path.exists("../pretrained/"):
@@ -172,7 +173,7 @@ def single_process( csv_folder_path,
                 num_frames = len(video_np)
 
             except Exception:
-                print("There is error reading ", video_path)
+                print("There is error reading ", video_path ,flush=True)
                 continue
 
 
@@ -328,8 +329,8 @@ if __name__ == "__main__":
 
 
     # Fundamental Setting
-    csv_folder_path = "/PATH/TO/CSV_FOLDER/general_dataset_scoring_SceneCut_left"       # Input
-    store_folder_path = "/PATH/TO/CSV_FOLDER/general_dataset_scoring_img"               # Output
+    csv_folder_path = "/scratch/uft5by/OpenVid-1M/csv/general_dataset_scoring_SceneCut_left"       # Input
+    store_folder_path = "/scratch/uft5by/OpenVid-1M/csv/general_dataset_scoring_img"               # Output
     scoring_criteria = ["Text_Area", "Image_Quality_Assessment", "Aesthetic", "Image_Complexity", "First_Frame_Clarity"]        #  First_Frame_Clarity only do the first frame
     samples_on_video = [0.0, 0.5, 0.95]         # Ratio of process across whole video duration
     text_area_crop = False                      # True for Webvid, we crop the watermark region out by empiricaly region
@@ -344,15 +345,10 @@ if __name__ == "__main__":
         os.makedirs(store_folder_path)
 
 
-    # Prepare return items
-    manager = multiprocessing.Manager()
-    return_dict = manager.dict()
-
-
     # Parallel process
     start_time = time.time()
     single_process(csv_folder_path, store_folder_path, GPU_offset, samples_on_video, scoring_criteria, text_area_crop)
     full_time_spent = int(time.time() - start_time)
-    print("Total time spent for this video is %d min %d s" %(full_time_spent//60, full_time_spent%60))
+    print("Total time spent for this video is %d min %d s" %(full_time_spent//60, full_time_spent%60), flush=True)
 
 
