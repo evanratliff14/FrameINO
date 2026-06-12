@@ -20,8 +20,8 @@ if __name__ == "__main__":
     
 
     # Basic Setting
-    csv_folder_path = "/PATH/TO/CSV_FOLDER/general_dataset_scoring_SceneCut"            # Input
-    store_folder_path = "/PATH/TO/CSV_FOLDER/general_dataset_scoring_SceneCut_left"     # Output
+    csv_folder_path = "/scratch/uft5by/OpenVid-1M/csv/general_dataset_scoring_SceneCut"            # Input
+    store_folder_path = "/scratch/uft5by/OpenVid-1M/csv/general_dataset_scoring_SceneCut_left"     # Output
     target_name = "SceneCut_AutoShot"
     shuffle = True              # This will shuffle the datset just in case patternlized distribution like 
     minimum_frame_duration = 100        # NOTE: This should be consistent with setting in filter_basic, usually 100: 49 * 2
