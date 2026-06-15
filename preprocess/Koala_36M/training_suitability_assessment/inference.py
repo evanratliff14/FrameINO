@@ -95,54 +95,6 @@ def inference_set(inf_loader, model, device, output_file, save_model=False, set_
         for i in range(len(video_paths)):
             writer.writerow([video_paths[i],gt_labels[i], pr_labels[i]])
 
-def call(model, video, num_clips):
-    with torch.no_grad():
-        b, c, t, h, w = video.shape
-        video = video.reshape(b, c, num_clips, t // num_clips, h, w).permute(0,2,1,3,4,5).reshape(b * num_clips, c, t // num_clips, h, w) 
-        labels = model(video,reduce_scores=False)
-        # vtss is just the mean of the scores?
-        result = [np.mean(l.cpu().numpy()) for l in labels]
-    return result
-
-
-def get_model(device):
-    with open("test.yml", "r") as f:
-        opt = yaml.safe_load(f)
-
-    
-    model = DiViDeAddEvaluator(**opt["model"]["args"]).to(device)
-
-    state_dict = torch.load(opt["test_load_path"], map_location=device)["state_dict"]
-    
-    if "test_load_path_aux" in opt:
-        aux_state_dict = torch.load(opt["test_load_path_aux"], map_location=device)["state_dict"]
-        
-        from collections import OrderedDict
-        
-        fusion_state_dict = OrderedDict()
-        for k, v in state_dict.items():
-            if k.startswith("vqa_head"):
-                ki = k.replace("vqa", "fragments")
-            else:
-                ki = k
-            fusion_state_dict[ki] = v
-            
-        for k, v in aux_state_dict.items():
-            if k.startswith("frag"):
-                continue
-            if k.startswith("vqa_head"):
-                ki = k.replace("vqa", "resize")
-            else:
-                ki = k
-            fusion_state_dict[ki] = v
-        
-        state_dict = fusion_state_dict
-        
-    model.load_state_dict(state_dict, strict=True)
-
-    return model
-
-    
 def main():
 
     parser = argparse.ArgumentParser()

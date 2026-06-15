@@ -243,7 +243,6 @@ class DiViDeAddEvaluator(nn.Module):
                         scores = scores[0]
                     if pooled:
                         scores = torch.mean(scores, (1,2,3,4))
-            self.train()
             if return_pooled_feats:
                 return scores, feats
             return scores
