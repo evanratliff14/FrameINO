@@ -13,13 +13,6 @@ from pathlib import Path
 
 sample_types=["resize", "fragments", "crop", "arp_resize", "arp_fragments"]
 
-# we rescale to 
-def rescale(pr, gt=None):
-    if gt is None:
-        pr = (pr - np.mean(pr)) / np.std(pr)
-    else:
-        pr = ((pr - np.mean(pr)) / np.std(pr)) * np.std(gt) + np.mean(gt)
-    return pr
 
 def call(model, video, num_clips, clip_length):
     video_dict ={}
@@ -37,8 +30,9 @@ def call(model, video, num_clips, clip_length):
 
 
         video_dict["fragments"] = video
+
+        # vtss is a mean/ compression of several features
         result = model(video_dict,inference=True, reduce_scores=True, pooled=True)
-        # vtss is just the mean of the scores?
     return result
 
 

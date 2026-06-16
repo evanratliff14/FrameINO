@@ -22,6 +22,24 @@ import json
 from torchvision.io import read_video
 import math
 
+import torch
+from decord import VideoReader, cpu, gpu
+
+def read_video_to_tensor(video_path, valid_duration):
+    # if torch.cuda.is_available():
+    #     vr = VideoReader(video_path, ctx=gpu(0))
+    # else:
+    # loading on cpu is safer
+    vr = VideoReader(video_path, ctx = cpu(0))
+
+    # we only load the necessary frames to avoid OOM
+    tensor_frames = vr.get_batch(range(valid_duration[0], valid_duration[1])) # Returns an NDArray
+    
+    tensor = torch.from_numpy(tensor_frames.asnumpy())
+    
+    # Permute from [T, H, W, C] to [T, C, H, W]
+    return tensor.permute(0, 3, 1, 2)
+
 
 csv.field_size_limit(sys.maxsize)
 
@@ -71,7 +89,9 @@ def print_model_size(model):
 @torch.no_grad
 def single_process( csv_folder_path,
                     store_folder_path,
-                    GPU_offset
+                    GPU_offset,
+                    clip_length,
+                    num_clips
                 ):
 
     # Setting
@@ -133,11 +153,12 @@ def single_process( csv_folder_path,
             # Read the video by ffmpeg
             video_path = row[elements["video_path"]]
             valid_duration = json.loads(row[elements["valid_duration"]])
-            video_tensor, audio_tensor, metadata = read_video(video_path, output_format="TCHW")
+            video_tensor  = read_video_to_tensor(video_path, valid_duration)
             video_tensor = transform(video_tensor)
             
             
             with torch.no_grad():
+                # type and normalize from raw format
                 video_tensor = video_tensor.to(torch.float32)
                 video_tensor = video_tensor / 255.0
                 video_tensor = video_tensor[valid_duration[0] : valid_duration[1], ...]
@@ -145,11 +166,11 @@ def single_process( csv_folder_path,
 
                 valid_duration_length = valid_duration[1]-valid_duration[0]
                 video_tensor = video_tensor.to(device)
-                clip_length =32
+                clip_length = clip_length
                 
-                result = call_inference.call(model, video_tensor, 10, clip_length)
+                result = call_inference.call(model, video_tensor, num_clips, clip_length)
                 
-                # result = sum(result)/len(result)
+                result = torch.mean(result).item()
                 print("Result:", result, flush=True)
 
 
@@ -167,7 +188,6 @@ def single_process( csv_folder_path,
                     
                     print(f"Peak Tensor VRAM Used: {peak_memory:.2f} MB")
                     print(f"Peak Total VRAM Cached: {peak_reserved:.2f} MB")
-                print(f"Result (freq {store_freq}): {result}")
                 print("We have processed ", float(idx/1000), "K video")
                 full_time_spent = int(time.time() - start_time)
                 print("Time spent is %d min %d s" %(full_time_spent//60, full_time_spent%60), flush=True)
@@ -192,14 +212,17 @@ if __name__ == "__main__":
     # Argument
     parser = argparse.ArgumentParser()
     parser.add_argument('--GPU_offset', type=int, default=0)
+    parser.add_argument('--num_clips', type=int, default = 5)
+    parser.add_argument('--clip_length', type=int, default = 16)
     args = parser.parse_args()
 
 
     # Fundamental Setting
     csv_folder_path = "/scratch/uft5by/OpenVid-1M/csv/general_dataset_scoring_SceneCut_left"       # Input
     store_folder_path = "/scratch/uft5by/OpenVid-1M/csv/general_dataset_scoring_vtss"               # Output
-    tmp_folder_name = "tmp_img_scoring/"        # temporary folder to store intermediate result
     GPU_offset = args.GPU_offset
+    num_clips = args.num_clips
+    clip_length = args.clip_length
 
 
 
@@ -210,7 +233,7 @@ if __name__ == "__main__":
 
     # Our sbatch will have 32 of these scripts, one for each GPU
     start_time = time.time()
-    single_process(csv_folder_path, store_folder_path, GPU_offset)
+    single_process(csv_folder_path, store_folder_path, GPU_offset, num_clips=num_clips, clip_length=clip_length)
     full_time_spent = int(time.time() - start_time)
     print("Total time spent for this video is %d min %d s" %(full_time_spent//60, full_time_spent%60), flush=True)
 

@@ -81,6 +81,7 @@ def inference_set(inf_loader, model, device, output_file, save_model=False, set_
         pr_labels += rescale(key_pr_labels)
         
     pr_labels = rescale(pr_labels, gt_labels) #resize pr_labels to the same scale as gt_labels
+    print("PR_LABELS: ", pr_labels)
 
     s = spearmanr(gt_labels, pr_labels)[0]
     p = pearsonr(gt_labels, pr_labels)[0]
