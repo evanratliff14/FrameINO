@@ -12,29 +12,14 @@ Coordinate convention (OpenD4RT / data_schema.md):
   - tracks_xyz_ref0[q, t] are 3D points in the same ref0 world frame.
 
 Scale is model-relative (no metric GT); trajectories show relative motion structure.
-
-```
-conda activate oneformer   # required for person segmentation
-pip install viser          # if not already installed
-python preprocess/3d_visualize.py \
-  --video_path /scratch/uft5by/OpenVid-1M/videos/jVLGXDjrQ0Q_40_0to134.mp4 \
-  --ckpt_path /home/uft5by/FrameINO/preprocess/Open_d4rt/checkpoints/OpenD4RT_48CLIP_9Mix_NoCropAUG/opend4rt.ckpt \
-  --config preprocess/Open_d4rt/configs/model_effective.yaml \
-  --num_frames 64 \
-  --umeyama_slide_window \
-  --output_npz /tmp/trajectories.npz
-
-```
+Export NPZ with --output_npz, then view locally via offline_view_3d_demo.py.
 
 """
 
 from __future__ import annotations
 
 import argparse
-import math
 import sys
-import threading
-import time
 from pathlib import Path
 from typing import Any
 
@@ -43,7 +28,6 @@ import torch
 from decord import VideoReader, cpu
 from sklearn.cluster import KMeans
 import cv2
-import os
 
 # ---------------------------------------------------------------------------
 # Path setup: OpenD4RT (nested repo) + FrameINO root (for OneFormer helpers).
@@ -432,6 +416,9 @@ def print_trajectory_summary(
     print()
 
 
+COORDINATE_CONVENTION = "ref0_opencv_t0_identity"
+
+
 def save_trajectories_npz(
     output_path: str | Path,
     *,
@@ -442,13 +429,16 @@ def save_trajectories_npz(
     tracks_xyz_ref0: np.ndarray,
     tracks_visibility: np.ndarray,
     identity_uv_px: np.ndarray,
+    video_height: int,
+    video_width: int,
 ) -> None:
-    """Persist all trajectory arrays for offline analysis."""
-    out_path = Path(__file__).resolve().parent / output_path
-    if not out_path.exists():
-        os.makedirs(str(out_path.parent))
+    """Persist trajectory arrays and metadata for offline_view_3d_demo.py."""
+    out_path = Path(output_path)
+    if not out_path.is_absolute():
+        out_path = PREPROCESS_ROOT / out_path
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(
-        str(Path(__file__).resolve().parent / output_path),
+        str(out_path),
         camera_xyz_world=camera_xyz_world.astype(np.float32),
         identity_xyz_world=identity_xyz_world.astype(np.float32),
         T_ref0_cam=t_ref0_cam.astype(np.float32),
@@ -456,242 +446,11 @@ def save_trajectories_npz(
         tracks_xyz_ref0=tracks_xyz_ref0.astype(np.float32),
         tracks_visibility=tracks_visibility.astype(bool),
         identity_uv_px=identity_uv_px.astype(np.float32),
+        video_height=np.int32(video_height),
+        video_width=np.int32(video_width),
+        coordinate_convention=np.asarray(COORDINATE_CONVENTION),
     )
-    print(f"Saved trajectories to {Path(__file__).resolve().parent / output_path}")
-
-
-# =============================================================================
-# Viser visualization
-# =============================================================================
-
-
-def _rotmat_to_wxyz(rot: np.ndarray) -> tuple[float, float, float, float]:
-    """Convert 3x3 rotation matrix to viser wxyz quaternion."""
-    r = np.asarray(rot, dtype=np.float64).reshape(3, 3)
-    trace = float(np.trace(r))
-    if trace > 0.0:
-        s = math.sqrt(trace + 1.0) * 2.0
-        qw, qx = 0.25 * s, (r[2, 1] - r[1, 2]) / s
-        qy, qz = (r[0, 2] - r[2, 0]) / s, (r[1, 0] - r[0, 1]) / s
-    elif r[0, 0] > r[1, 1] and r[0, 0] > r[2, 2]:
-        s = math.sqrt(max(1.0 + r[0, 0] - r[1, 1] - r[2, 2], 1e-12)) * 2.0
-        qw, qx = (r[2, 1] - r[1, 2]) / s, 0.25 * s
-        qy, qz = (r[0, 1] + r[1, 0]) / s, (r[0, 2] + r[2, 0]) / s
-    elif r[1, 1] > r[2, 2]:
-        s = math.sqrt(max(1.0 + r[1, 1] - r[0, 0] - r[2, 2], 1e-12)) * 2.0
-        qw, qx = (r[0, 2] - r[2, 0]) / s, (r[0, 1] + r[1, 0]) / s
-        qy, qz = 0.25 * s, (r[1, 2] + r[2, 1]) / s
-    else:
-        s = math.sqrt(max(1.0 + r[2, 2] - r[0, 0] - r[1, 1], 1e-12)) * 2.0
-        qw, qx = (r[1, 0] - r[0, 1]) / s, (r[0, 2] + r[2, 0]) / s
-        qy, qz = (r[1, 2] + r[2, 1]) / s, 0.25 * s
-    q = np.asarray([qw, qx, qy, qz], dtype=np.float64)
-    q /= max(np.linalg.norm(q), 1e-12)
-    return tuple(float(v) for v in q.tolist())
-
-
-def _fov_from_k(k: np.ndarray, image_h: int) -> float:
-    kk = np.asarray(k, dtype=np.float64).reshape(3, 3)
-    fy = float(kk[1, 1])
-    if not np.isfinite(fy) or abs(fy) < 1e-6:
-        return math.radians(50.0)
-    return float(2.0 * math.atan2(float(image_h) * 0.5, fy))
-
-
-def _trajectory_line_segments(xyz: np.ndarray) -> np.ndarray | None:
-    """Build viser line segments [S, 2, 3] from a [T, 3] trajectory, breaking at NaNs."""
-    pts = np.asarray(xyz, dtype=np.float32)
-    segments: list[np.ndarray] = []
-    prev = None
-    for row in pts:
-        if not np.isfinite(row).all():
-            prev = None
-            continue
-        if prev is not None:
-            segments.append(np.stack([prev, row], axis=0))
-        prev = row
-    if not segments:
-        return None
-    return np.stack(segments, axis=0)
-
-
-def run_viser_demo(
-    *,
-    video_rgb: np.ndarray,
-    camera_xyz_world: np.ndarray,
-    identity_xyz_world: np.ndarray,
-    t_ref0_cam: np.ndarray,
-    k_seq: np.ndarray,
-    tracks_xyz_ref0: np.ndarray,
-    tracks_visibility: np.ndarray,
-    host: str = "0.0.0.0",
-    port: int = 8081,
-) -> None:
-    """
-    Interactive viser viewer:
-      - Red: camera world trajectory + frustum at current frame.
-      - Green: identity centroid trajectory + per-frame track points.
-    """
-    try:
-        import viser
-    except ImportError as exc:
-        raise SystemExit(
-            "Missing dependency `viser`. Install with: pip install viser"
-        ) from exc
-
-    num_frames = int(video_rgb.shape[0])
-    height, width = int(video_rgb.shape[1]), int(video_rgb.shape[2])
-
-    # Scene scale from all valid points for sensible default sizes.
-    all_pts = []
-    for arr in (camera_xyz_world, identity_xyz_world):
-        valid = np.isfinite(arr).all(axis=-1)
-        if np.any(valid):
-            all_pts.append(arr[valid])
-    if all_pts:
-        stacked = np.concatenate(all_pts, axis=0)
-        radius = float(np.max(np.linalg.norm(stacked - stacked.mean(axis=0), axis=1)))
-        radius = max(radius, 0.5)
-    else:
-        radius = 1.0
-    
-    print(f"Received scene scale of {radius}")
-
-    server = viser.ViserServer(host=host, port=int(port))
-    print(f"Viser demo running at http://localhost:{port}")
-
-    frame_slider = server.gui.add_slider("Frame", min=0, max=max(num_frames - 1, 0), step=1, initial_value=0)
-    play_cb = server.gui.add_checkbox("Play", initial_value=False)
-    fps_slider = server.gui.add_slider("FPS", min=1, max=30, step=1, initial_value=10)
-    show_frustum = server.gui.add_checkbox("Show camera frustum", initial_value=True)
-    show_tracks = server.gui.add_checkbox("Show identity track points", initial_value=True)
-
-    dynamic_handles: list[Any] = []
-    render_lock = threading.Lock()
-
-    def clear_dynamic() -> None:
-        for h in dynamic_handles:
-            try:
-                h.remove()
-            except Exception:
-                pass
-        dynamic_handles.clear()
-
-    def add_dynamic(h: Any) -> None:
-        dynamic_handles.append(h)
-
-    def _add_static_trajectory(name: str, xyz: np.ndarray, color: tuple[int, int, int]) -> None:
-        segs = _trajectory_line_segments(xyz)
-        if segs is not None:
-            seg_colors = np.tile(np.asarray(color, dtype=np.uint8), (segs.shape[0], 2, 1))
-            server.scene.add_line_segments(
-                f"/trajectories/{name}/path",
-                points=segs.astype(np.float32),
-                colors=seg_colors,
-                line_width=3.0,
-            )
-        valid = np.isfinite(xyz).all(axis=-1)
-        if np.any(valid):
-            head = xyz[valid][-1]
-            server.scene.add_point_cloud(
-                f"/trajectories/{name}/head",
-                points=head[None, :].astype(np.float32),
-                colors=np.asarray([color], dtype=np.uint8),
-                point_size=max(radius * 0.02, 0.02),
-                point_shape="sparkle",
-            )
-
-    # Full trajectories are static for the session.
-    _add_static_trajectory("camera", camera_xyz_world, (255, 64, 64))
-    _add_static_trajectory("identity", identity_xyz_world, (64, 220, 100))
-
-    frame_image = server.gui.add_image(video_rgb[0], label="rgb_frame")
-
-    def render() -> None:
-        with render_lock:
-            clear_dynamic()
-            t = int(frame_slider.value)
-            t = int(np.clip(t, 0, max(num_frames - 1, 0)))
-            frame_image.image = video_rgb[t]
-
-            # Current-frame markers.
-            if np.isfinite(camera_xyz_world[t]).all():
-                add_dynamic(
-                    server.scene.add_point_cloud(
-                        "/current/camera",
-                        points=camera_xyz_world[t][None, :].astype(np.float32),
-                        colors=np.asarray([[255, 80, 80]], dtype=np.uint8),
-                        point_size=max(radius * 0.03, 0.03),
-                    )
-                )
-            if np.isfinite(identity_xyz_world[t]).all():
-                add_dynamic(
-                    server.scene.add_point_cloud(
-                        "/current/identity",
-                        points=identity_xyz_world[t][None, :].astype(np.float32),
-                        colors=np.asarray([[80, 255, 120]], dtype=np.uint8),
-                        point_size=max(radius * 0.03, 0.03),
-                    )
-                )
-
-            if bool(show_tracks.value):
-                vis_q = tracks_visibility[:, t] & np.isfinite(tracks_xyz_ref0[:, t]).all(axis=-1)
-                if np.any(vis_q):
-                    pts = tracks_xyz_ref0[vis_q, t]
-                    add_dynamic(
-                        server.scene.add_point_cloud(
-                            "/current/identity_tracks",
-                            points=pts.astype(np.float32),
-                            colors=np.tile(np.asarray([[120, 255, 160]], dtype=np.uint8), (pts.shape[0], 1)),
-                            point_size=max(radius * 0.012, 0.01),
-                        )
-                    )
-
-            if bool(show_frustum.value) and np.isfinite(t_ref0_cam[t]).all():
-                pose = t_ref0_cam[t]
-                k_t = k_seq[t] if t < k_seq.shape[0] else k_seq[0]
-                fov = _fov_from_k(k_t, height)
-                add_dynamic(
-                    server.scene.add_camera_frustum(
-                        "/current/camera_frustum",
-                        fov=float(fov),
-                        aspect=float(width) / float(max(height, 1)),
-                        scale=max(radius * 0.15, 0.1),
-                        color=(255, 255, 255),
-                        image=video_rgb[t],
-                        wxyz=_rotmat_to_wxyz(pose[:3, :3]),
-                        position=tuple(float(x) for x in pose[:3, 3].tolist()),
-                    )
-                )
-
-    @frame_slider.on_update
-    def _(_) -> None:
-        render()
-
-    @play_cb.on_update
-    def _(_) -> None:
-        pass
-
-    @fps_slider.on_update
-    def _(_) -> None:
-        pass
-
-    @show_frustum.on_update
-    def _(_) -> None:
-        render()
-
-    @show_tracks.on_update
-    def _(_) -> None:
-        render()
-
-    # Instead of blocking forever inside a flat while loop, 
-    # let viser handle its own internal loop threads or wait safely:
-    print("Viser dashboard active. Press Ctrl+C to terminate.")
-    try:
-        while True:
-            time.sleep(1.0)
-    except KeyboardInterrupt:
-        print("Shutting down viewer...")
+    print(f"Saved trajectories to {out_path}")
 
 
 # =============================================================================
@@ -717,10 +476,7 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Stitch long sequences with Umeyama Sim(3) sliding windows (clip > 48 frames).",
     )
-    parser.add_argument("--output_npz", type=str, default=None, help="Optional path to save trajectory arrays.")
-    parser.add_argument("--viser_port", type=int, default=8081)
-    parser.add_argument("--viser_host", type=str, default="0.0.0.0")
-    parser.add_argument("--no_viser", action="store_true", help="Skip interactive viewer (save-only mode).")
+    parser.add_argument("--output_npz", type=str, default=None, help="Path to save trajectory NPZ for offline viewing.")
     return parser.parse_args()
 
 
@@ -789,23 +545,11 @@ def main() -> int:
             tracks_xyz_ref0=identity_result["tracks_xyz_ref0"],
             tracks_visibility=identity_result["tracks_visibility"],
             identity_uv_px=identity_uv_px,
-        )
-
-    if not args.no_viser:
-        run_viser_demo(
-            video_rgb=video_rgb,
-            camera_xyz_world=camera_xyz_world,
-            identity_xyz_world=identity_xyz_world,
-            t_ref0_cam=camera_result["T_ref0_cam"],
-            k_seq=camera_result["K"],
-            tracks_xyz_ref0=identity_result["tracks_xyz_ref0"],
-            tracks_visibility=identity_result["tracks_visibility"],
-            host=str(args.viser_host),
-            port=int(args.viser_port),
+            video_height=height,
+            video_width=width,
         )
 
     return 0
-
 
 if __name__ == "__main__":
     raise SystemExit(main())
