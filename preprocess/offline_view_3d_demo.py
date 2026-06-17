@@ -37,7 +37,7 @@ R_OPENCV_TO_VIEWER = np.array(
 # =============================================================================
 
 
-def load_video_frames(video_path: Path, sample_step: int = 5, max_frames: int | None = None) -> np.ndarray:
+def load_video_frames(video_path: Path, sample_step: int = 10, max_frames: int | None = None) -> np.ndarray:
     """Load video frames as uint8 RGB [T, H, W, 3] via OpenCV."""
     if not video_path.exists():
         raise FileNotFoundError(f"Video file not found at: {video_path}")
@@ -256,6 +256,48 @@ def _trajectory_line_segments(xyz: np.ndarray) -> np.ndarray | None:
     return np.stack(segments, axis=0)
 
 
+def jump_client_view_to_camera_pose(
+    client: Any,
+    pose_viewer: np.ndarray,
+    *,
+    fov: float | None = None,
+    fallback_look_distance: float = 1.0,
+) -> None:
+    """
+    Align a Viser client navigation camera with a camera-to-world pose in viewer space.
+
+    Uses the same forward/up convention as add_camera_frustum (optical axis = R[:, 2]).
+    """
+    cam = getattr(client, "camera", None)
+    if cam is None:
+        return
+    pose = np.asarray(pose_viewer, dtype=np.float64).reshape(4, 4)
+    rot = pose[:3, :3]
+    pos = pose[:3, 3]
+    fwd = rot[:, 2]
+    up = -rot[:, 1]
+    fwd = fwd / max(np.linalg.norm(fwd), 1e-12)
+    up = up / max(np.linalg.norm(up), 1e-12)
+    look_distance = float(max(fallback_look_distance, 1e-3))
+    try:
+        cur_pos = np.asarray(cam.position, dtype=np.float64)
+        cur_look = np.asarray(cam.look_at, dtype=np.float64)
+        cur_dist = float(np.linalg.norm(cur_look - cur_pos))
+        if np.isfinite(cur_dist) and cur_dist > 1e-3:
+            look_distance = cur_dist
+    except Exception:
+        pass
+    look_at = pos + fwd * look_distance
+    try:
+        if fov is not None and np.isfinite(float(fov)) and float(fov) > 1e-6:
+            cam.fov = float(fov)
+        cam.position = tuple(float(x) for x in pos.tolist())
+        cam.look_at = tuple(float(x) for x in look_at.tolist())
+        cam.up_direction = tuple(float(x) for x in up.tolist())
+    except Exception:
+        return
+
+
 # =============================================================================
 # Main
 # =============================================================================
@@ -266,6 +308,7 @@ def main() -> None:
     parser.add_argument("--npz_path", type=str, required=True, help="Path to trajectories.npz")
     parser.add_argument("--video_path", type=str, required=True, help="Path to local copy of video.")
     parser.add_argument("--port", type=int, default=8080, help="Local port for Viser.")
+    parser.add_argument("--sample_step", type=int, default=10, help="Local port for Viser.")
     args = parser.parse_args()
 
     print(f"Loading arrays from {args.npz_path}...")
@@ -285,7 +328,7 @@ def main() -> None:
 
     num_frames_data = int(camera_xyz_world.shape[0])
     print(f"Loading local video frames from {args.video_path}...")
-    video_rgb = load_video_frames(Path(args.video_path), max_frames=num_frames_data)
+    video_rgb = load_video_frames(Path(args.video_path), sample_step = args.sample_step, max_frames=num_frames_data)
 
     num_frames = min(int(video_rgb.shape[0]), num_frames_data)
     video_rgb = video_rgb[:num_frames]
@@ -380,6 +423,27 @@ def main() -> None:
 
     frame_image = server.gui.add_image(video_rgb[0], label="rgb_frame")
 
+    def sync_all_clients_to_frame_camera(frame_idx: int) -> None:
+        """Set each connected client's viewport to the estimated camera at frame_idx."""
+        t = int(np.clip(int(frame_idx), 0, max(num_frames - 1, 0)))
+        if not np.isfinite(t_ref0_cam[t]).all():
+            return
+        pose_viewer = transform_pose_for_viewer(t_ref0_cam[t])
+        k_t = k_seq[t] if t < k_seq.shape[0] else k_seq[0]
+        fov = float(_fov_from_k(k_t, height))
+        look_dist = max(radius * 0.8, 0.5)
+        for client in server.get_clients().values():
+            jump_client_view_to_camera_pose(
+                client,
+                pose_viewer,
+                fov=fov,
+                fallback_look_distance=look_dist,
+            )
+
+    @server.on_client_connect
+    def _on_client_connect(client: viser.ClientHandle) -> None:
+        sync_all_clients_to_frame_camera(int(frame_slider.value))
+
     def render() -> None:
         with render_lock:
             clear_dynamic()
@@ -459,6 +523,7 @@ def main() -> None:
     point_radius_slider.on_update(lambda _: render())
 
     render()
+    sync_all_clients_to_frame_camera(0)
     try:
         while True:
             time.sleep(1.0)

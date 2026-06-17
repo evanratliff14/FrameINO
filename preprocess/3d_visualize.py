@@ -3,10 +3,14 @@
 3D Camera + Identity Trajectory Demo.
 
 For a single input video, estimates:
-  1. Camera world position (x, y, z) over time in the OpenD4RT ref0 frame.
-  2. Identity (person) world centroid over time via frame-0 panoptic queries + 3D tracking.
+  1. Camera world position (x, y, z) over time in the ref0 frame.
+  2. Identity world centroid over time via frame-0 panoptic queries + 3D tracking.
 
-Coordinate convention (OpenD4RT / data_schema.md):
+Backends (--model):
+  - opend4rt: OpenD4RT camera branches + 3D track head
+  - spatrackerv2: SpaTrackV2 VGGT4Track front-end + Predictor joint tracking
+
+Coordinate convention (ref0_opencv_t0_identity):
   - ref0 is the world frame anchored at frame 0.
   - T_ref0_cam[t] is a 4x4 camera-to-world transform; camera position is T_ref0_cam[t, :3, 3].
   - tracks_xyz_ref0[q, t] are 3D points in the same ref0 world frame.
@@ -14,7 +18,11 @@ Coordinate convention (OpenD4RT / data_schema.md):
 Scale is model-relative (no metric GT); trajectories show relative motion structure.
 Export NPZ with --output_npz, then view locally via offline_view_3d_demo.py.
 
-python preprocess/3d_visualize.py   --video_path /home/uft5by/FrameINO/preprocess/1917.mp4   --ckpt_path /home/uft5by/FrameINO/preprocess/Open_d4rt/checkpoints/OpenD4RT_48CLIP_9Mix_NoCropAUG/opend4rt.ckpt   --config preprocess/Open_d4rt/configs/model_effective.yaml   --num_frames 10000   --umeyama_slide_window   --output_npz tmp/trajectories.npz
+python preprocess/3d_visualize.py --model opend4rt --video_path preprocess/1917.mp4 \\
+  --ckpt_path preprocess/Open_d4rt/checkpoints/.../opend4rt.ckpt --output_npz tmp/trajectories.npz
+
+python preprocess/3d_visualize.py --model spatrackerv2 --video_path preprocess/1917.mp4 \\
+  --output_npz tmp/spatrack_trajectories.npz
 
 """
 
@@ -22,6 +30,8 @@ from __future__ import annotations
 
 import argparse
 import sys
+import types
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -307,7 +317,93 @@ def uv_px_to_norm(uv_px: np.ndarray, width: int, height: int) -> np.ndarray:
 
 
 # =============================================================================
-# Trajectory extraction
+# Canonical trajectory bundle (NPZ-compatible for offline_view_3d_demo.py)
+# =============================================================================
+
+COORDINATE_CONVENTION = "ref0_opencv_t0_identity"
+
+
+@dataclass
+class TrajectoryResult:
+    """Self-contained backend output in ref0 OpenCV convention."""
+
+    camera_xyz_world: np.ndarray
+    identity_xyz_world: np.ndarray
+    T_ref0_cam: np.ndarray
+    K: np.ndarray
+    tracks_xyz_ref0: np.ndarray
+    tracks_visibility: np.ndarray
+    identity_uv_px: np.ndarray
+    coordinate_convention: str = COORDINATE_CONVENTION
+
+    def to_npz_kwargs(
+        self,
+        *,
+        video_height: int,
+        video_width: int,
+    ) -> dict[str, Any]:
+        return {
+            "camera_xyz_world": self.camera_xyz_world,
+            "identity_xyz_world": self.identity_xyz_world,
+            "t_ref0_cam": self.T_ref0_cam,
+            "k_seq": self.K,
+            "tracks_xyz_ref0": self.tracks_xyz_ref0,
+            "tracks_visibility": self.tracks_visibility,
+            "identity_uv_px": self.identity_uv_px,
+            "video_height": video_height,
+            "video_width": video_width,
+        }
+
+
+def normalize_c2w_to_ref0(c2w_traj: np.ndarray) -> np.ndarray:
+    """Express cumulative c2w poses in ref0 frame with T_ref0_cam[0] = I."""
+    c2w = np.asarray(c2w_traj, dtype=np.float64)
+    if c2w.ndim != 3 or c2w.shape[1:] != (4, 4):
+        raise ValueError(f"Expected c2w [T,4,4], got {c2w.shape}")
+    c0_inv = np.linalg.inv(c2w[0])
+    return np.stack([c0_inv @ c2w[t] for t in range(c2w.shape[0])], axis=0).astype(np.float32)
+
+
+def cam_space_tracks_to_ref0(
+    xyz_cam: np.ndarray,
+    t_ref0_cam: np.ndarray,
+) -> np.ndarray:
+    """
+    Lift per-frame camera-space 3D points into ref0 world.
+
+    Args:
+        xyz_cam: [T, Q, 3] points in each frame's camera coordinates.
+        t_ref0_cam: [T, 4, 4] camera-to-world in ref0.
+
+    Returns:
+        tracks_xyz_ref0: [Q, T, 3]
+    """
+    xyz = np.asarray(xyz_cam, dtype=np.float64)
+    poses = np.asarray(t_ref0_cam, dtype=np.float64)
+    rot = poses[:, :3, :3]
+    trans = poses[:, :3, 3]
+    world = np.einsum("tij,tqj->tqi", rot, xyz) + trans[:, None, :]
+    return np.transpose(world, (1, 0, 2)).astype(np.float32)
+
+
+def compute_identity_centroid(
+    tracks_xyz_ref0: np.ndarray,
+    tracks_visibility: np.ndarray,
+) -> np.ndarray:
+    """Per-frame nanmean of visible query tracks -> [T, 3]."""
+    tracks = np.asarray(tracks_xyz_ref0, dtype=np.float32)
+    vis = np.asarray(tracks_visibility, dtype=bool)
+    num_frames = int(tracks.shape[1])
+    identity_xyz = np.full((num_frames, 3), np.nan, dtype=np.float32)
+    for t in range(num_frames):
+        vis_q = vis[:, t] & np.isfinite(tracks[:, t]).all(axis=-1)
+        if np.any(vis_q):
+            identity_xyz[t] = np.nanmean(tracks[vis_q, t], axis=0)
+    return identity_xyz
+
+
+# =============================================================================
+# Trajectory extraction (per-backend building blocks)
 # =============================================================================
 
 
@@ -372,13 +468,7 @@ def extract_identity_centroid_trajectory(
     )
     tracks_xyz_ref0 = np.asarray(track_payload["tracks_xyz_ref0"], dtype=np.float32)  # [Q, T, 3]
     tracks_vis = np.asarray(track_payload["tracks_visibility"], dtype=bool)  # [Q, T]
-
-    num_frames = int(tracks_xyz_ref0.shape[1])
-    identity_xyz_world = np.full((num_frames, 3), np.nan, dtype=np.float32)
-    for t in range(num_frames):
-        vis_q = tracks_vis[:, t] & np.isfinite(tracks_xyz_ref0[:, t]).all(axis=-1)
-        if np.any(vis_q):
-            identity_xyz_world[t] = np.nanmean(tracks_xyz_ref0[vis_q, t], axis=0)
+    identity_xyz_world = compute_identity_centroid(tracks_xyz_ref0, tracks_vis)
 
     return {
         "tracks_xyz_ref0": tracks_xyz_ref0,
@@ -386,6 +476,220 @@ def extract_identity_centroid_trajectory(
         "tracks_confidence": np.asarray(track_payload.get("tracks_confidence", np.nan), dtype=np.float32),
         "identity_xyz_world": identity_xyz_world,
     }
+
+
+# =============================================================================
+# Backend: OpenD4RT
+# =============================================================================
+
+
+def run_opend4rt_backend(
+    *,
+    config_path: str | Path,
+    ckpt_path: str | Path,
+    device: torch.device,
+    video_rgb: np.ndarray,
+    identity_uv_px: np.ndarray,
+    identity_uv_norm: np.ndarray,
+    image_hw: tuple[int, int],
+    video_hw: tuple[int, int],
+    camera_grid_size: int,
+    query_chunk_size: int,
+    umeyama_slide_window: bool,
+) -> TrajectoryResult:
+    """Run OpenD4RT camera + identity tracking; return NPZ-ready trajectories."""
+    height, width = video_hw
+    video_rgb, video_model_rgb = prepare_video_inputs(video_rgb, image_hw=image_hw)
+
+    print(f"Loading D4RT model from {ckpt_path}")
+    model = load_d4rt_model(config_path, ckpt_path, device)
+
+    print("Estimating camera trajectory (Umeyama extrinsics + intrinsics)...")
+    camera_result = extract_camera_trajectory(
+        model=model,
+        video_model_rgb=video_model_rgb,
+        image_hw=(height, width),
+        camera_grid_size=int(camera_grid_size),
+        query_chunk_size=int(query_chunk_size),
+        umeyama_slide_window=bool(umeyama_slide_window),
+    )
+
+    with timer("tracking"):
+        print("Tracking identity queries in ref0 world frame...")
+        identity_result = extract_identity_centroid_trajectory(
+            model=model,
+            video_model_rgb=video_model_rgb,
+            identity_uv_norm=identity_uv_norm,
+            query_chunk_size=int(query_chunk_size),
+            umeyama_slide_window=bool(umeyama_slide_window),
+        )
+
+    return TrajectoryResult(
+        camera_xyz_world=camera_result["camera_xyz_world"],
+        identity_xyz_world=identity_result["identity_xyz_world"],
+        T_ref0_cam=camera_result["T_ref0_cam"],
+        K=camera_result["K"],
+        tracks_xyz_ref0=identity_result["tracks_xyz_ref0"],
+        tracks_visibility=identity_result["tracks_visibility"],
+        identity_uv_px=identity_uv_px,
+    )
+
+
+# =============================================================================
+# Backend: SpaTrackV2
+# =============================================================================
+
+_SPATRACK_SHIM_INSTALLED = False
+
+
+def _install_spatrack_import_shim() -> None:
+    """Map models.SpaTrackV2.* imports to vendored SpaTrackV2_code paths."""
+    global _SPATRACK_SHIM_INSTALLED
+    if _SPATRACK_SHIM_INSTALLED:
+        return
+
+    code_root = PREPROCESS_ROOT / "SpaTrackV2_code"
+    repo_str = str(REPO_ROOT)
+    if repo_str not in sys.path:
+        sys.path.insert(0, repo_str)
+
+    models_pkg = sys.modules.get("models")
+    if models_pkg is None:
+        models_pkg = types.ModuleType("models")
+        models_pkg.__path__ = []
+        sys.modules["models"] = models_pkg
+
+    spatrack_pkg = types.ModuleType("models.SpaTrackV2")
+    spatrack_pkg.__path__ = [str(code_root)]
+    sys.modules["models.SpaTrackV2"] = spatrack_pkg
+
+    spatrack_models = types.ModuleType("models.SpaTrackV2.models")
+    spatrack_models.__path__ = [str(code_root / "models")]
+    sys.modules["models.SpaTrackV2.models"] = spatrack_models
+
+    spatrack_utils = types.ModuleType("models.SpaTrackV2.utils")
+    spatrack_utils.__path__ = [str(code_root / "utils")]
+    sys.modules["models.SpaTrackV2.utils"] = spatrack_utils
+
+    _SPATRACK_SHIM_INSTALLED = True
+
+
+def _build_spatrack_queries(identity_uv_px: np.ndarray) -> np.ndarray:
+    """OneFormer UV seeds -> SpaTrack query_xyt [Q, 3] as [frame, u, v]."""
+    uv = np.asarray(identity_uv_px, dtype=np.float32)
+    frame_idx = np.zeros((uv.shape[0], 1), dtype=np.float32)
+    return np.concatenate([frame_idx, uv], axis=1)
+
+
+def run_spatrackerv2_backend(
+    *,
+    device: torch.device,
+    video_tensor: torch.Tensor,
+    identity_uv_px: np.ndarray,
+    video_hw: tuple[int, int],
+    front_ckpt: str,
+    tracker_ckpt: str,
+) -> TrajectoryResult:
+    """
+    Run SpaTrackV2 VGGT4Track front-end + Predictor tracking.
+    Converts outputs to ref0 OpenCV NPZ convention internally.
+    """
+    _install_spatrack_import_shim()
+    from preprocess.SpaTrackV2_code.models.predictor import Predictor
+    from preprocess.SpaTrackV2_code.models.vggt4track.models.vggt_moe import VGGT4Track
+    from preprocess.SpaTrackV2_code.models.vggt4track.utils.load_fn import preprocess_image
+
+    height, width = video_hw
+    num_frames = int(video_tensor.shape[0])
+
+    print(f"Loading SpaTrackV2 front-end from {front_ckpt}")
+    vggt4track_model = VGGT4Track.from_pretrained(front_ckpt)
+    vggt4track_model.eval().to(device)
+
+    print(f"Loading SpaTrackV2 tracker from {tracker_ckpt}")
+    tracker_model = Predictor.from_pretrained(tracker_ckpt)
+    tracker_model.eval().to(device)
+
+    video = video_tensor.float().to(device)
+    if video.max() > 1.0 + 1e-3:
+        video = video / 255.0
+
+    print("Running VGGT4Track front-end (camera, depth)...")
+    with torch.no_grad():
+        video_proc = preprocess_image(video)[None]
+        with torch.cuda.amp.autocast(dtype=torch.bfloat16, enabled=device.type == "cuda"):
+            predictions = vggt4track_model(video_proc)
+            extrinsic = predictions["poses_pred"]
+            intrinsic = predictions["intrs"]
+            depth_map = predictions["points_map"][..., 2]
+            depth_conf = predictions["unc_metric"]
+
+    depth_tensor = depth_map.squeeze().detach().cpu().numpy()
+    extrs = extrinsic.squeeze().detach().cpu().numpy()
+    intrs = intrinsic.squeeze().detach().cpu().numpy()
+    unc_metric = (depth_conf.squeeze().detach().cpu().numpy() > 0.5).astype(np.float32)
+
+    query_xyt = _build_spatrack_queries(identity_uv_px)
+    print(f"  SpaTrack queries: {query_xyt.shape[0]} points at frame 0")
+
+    print("Running SpaTrackV2 Predictor (joint 3D tracking)...")
+    with torch.no_grad():
+        with torch.amp.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=device.type == "cuda"):
+            (
+                c2w_traj,
+                intrs_out,
+                _point_map,
+                _conf_depth,
+                track3d_pred,
+                _track2d_pred,
+                vis_pred,
+                _conf_pred,
+                _video_out,
+            ) = tracker_model.forward(
+                video,
+                depth=depth_tensor,
+                intrs=intrs,
+                extrs=extrs,
+                queries=query_xyt,
+                unc_metric=unc_metric,
+                fps=1,
+                full_point=False,
+                iters_track=4,
+                query_no_BA=True,
+                fixed_cam=False,
+                stage=1,
+                support_frame=num_frames - 1,
+                replace_ratio=0.2,
+            )
+
+    c2w = c2w_traj.detach().cpu().numpy()
+    t_ref0_cam = normalize_c2w_to_ref0(c2w)
+    camera_xyz_world = t_ref0_cam[:, :3, 3].copy()
+
+    xyz_cam = track3d_pred[:, :, :3].detach().cpu().numpy()
+    tracks_xyz_ref0 = cam_space_tracks_to_ref0(xyz_cam, t_ref0_cam)
+
+    vis = vis_pred.squeeze(-1).detach().cpu().numpy()
+    if vis.ndim == 2:
+        tracks_visibility = (vis > 0.5).T.astype(bool)
+    else:
+        tracks_visibility = (vis > 0.5).astype(bool)
+
+    k_seq = intrs_out.detach().cpu().numpy().astype(np.float32)
+    if k_seq.shape[0] != num_frames:
+        k_seq = k_seq[:num_frames]
+
+    identity_xyz_world = compute_identity_centroid(tracks_xyz_ref0, tracks_visibility)
+
+    return TrajectoryResult(
+        camera_xyz_world=camera_xyz_world,
+        identity_xyz_world=identity_xyz_world,
+        T_ref0_cam=t_ref0_cam,
+        K=k_seq,
+        tracks_xyz_ref0=tracks_xyz_ref0,
+        tracks_visibility=tracks_visibility,
+        identity_uv_px=identity_uv_px,
+    )
 
 
 def _path_length(xyz: np.ndarray) -> float:
@@ -425,9 +729,6 @@ def print_trajectory_summary(
             print(f"  End   xyz: [{last[0]:.4f}, {last[1]:.4f}, {last[2]:.4f}]")
             print(f"  Path length: {_path_length(traj):.4f}")
     print()
-
-
-COORDINATE_CONVENTION = "ref0_opencv_t0_identity"
 
 
 def save_trajectories_npz(
@@ -472,11 +773,30 @@ def save_trajectories_npz(
 def parse_args() -> argparse.Namespace:
     default_config = PREPROCESS_ROOT / "Open_d4rt" / "configs" / "model_effective.yaml"
     parser = argparse.ArgumentParser(
-        description="3D camera + identity centroid trajectory demo (OpenD4RT + OneFormer)."
+        description="3D camera + identity centroid trajectory demo (OpenD4RT or SpaTrackV2 + OneFormer)."
     )
     parser.add_argument("--video_path", type=str, required=True, help="Input video path.")
+    parser.add_argument(
+        "--model",
+        type=str,
+        default="opend4rt",
+        choices=("opend4rt", "spatrackerv2"),
+        help="Trajectory backend: opend4rt or spatrackerv2.",
+    )
     parser.add_argument("--config", type=str, default=str(default_config), help="D4RT model config yaml.")
-    parser.add_argument("--ckpt_path", type=str, required=True, help="D4RT checkpoint path.")
+    parser.add_argument("--ckpt_path", type=str, default=None, help="D4RT checkpoint path (required for opend4rt).")
+    parser.add_argument(
+        "--spatrack_front_ckpt",
+        type=str,
+        default="Yuxihenry/SpatialTrackerV2_Front",
+        help="SpaTrackV2 VGGT4Track front-end checkpoint (HF id or local path).",
+    )
+    parser.add_argument(
+        "--spatrack_tracker_ckpt",
+        type=str,
+        default="Yuxihenry/SpatialTrackerV2-Offline",
+        help="SpaTrackV2 Predictor checkpoint (HF id or local path).",
+    )
     parser.add_argument("--num_frames", type=int, default=64, help="Max frames to process.")
     parser.add_argument("--device", type=str, default="auto", choices=("auto", "cuda", "cpu"))
     parser.add_argument("--num_identity_queries", type=int, default=48, help="UV query points on identity mask.")
@@ -488,13 +808,21 @@ def parse_args() -> argparse.Namespace:
         help="Stitch long sequences with Umeyama Sim(3) sliding windows (clip > 48 frames).",
     )
     parser.add_argument("--output_npz", type=str, default=None, help="Path to save trajectory NPZ for offline viewing.")
-    parser.add_argument("--sample_step", type=int, default=None, help="Range function third argument to contruct frames for tracking")
+    parser.add_argument(
+        "--sample_step",
+        type=int,
+        default=10,
+        help="Subsample every N frames when loading video (default 1).",
+    )
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
     device = _resolve_device(args.device)
+
+    if args.model == "opend4rt" and not args.ckpt_path:
+        raise ValueError("--ckpt_path is required when --model opend4rt")
 
     video_path = Path(args.video_path)
     if not video_path.exists():
@@ -506,59 +834,54 @@ def main() -> int:
     num_frames, height, width = int(video_rgb.shape[0]), int(video_rgb.shape[1]), int(video_rgb.shape[2])
     print(f"  Frames: {num_frames}, resolution: {width}x{height}")
 
-    cfg = load_yaml_config(args.config)
-    image_size = cfg.get_path("model.input.image_size", [256, 256])
-    image_hw = (int(image_size[0]), int(image_size[1]))
-    video_rgb, video_model_rgb = prepare_video_inputs(video_rgb, image_hw=image_hw)
-
-    print(f"Loading D4RT model from {args.ckpt_path}")
-    model = load_d4rt_model(args.config, args.ckpt_path, device)
-
-    print(f"Segmenting frame-0 with OneFormer...")
+    print("Segmenting frame-0 with OneFormer...")
     identity_uv_px, identity_meta = sample_identity_uv_queries(
         video_rgb[0],
         num_queries=int(args.num_identity_queries),
     )
-    identity_uv_norm = uv_px_to_norm(identity_uv_px, width=width, height=height)
-    print(f"  Sampled {identity_meta['num_queries']} query points "
-          f"(mask area ratio {identity_meta['mask_area_ratio']:.3f})")
-
-    print("Estimating camera trajectory (Umeyama extrinsics + intrinsics)...")
-    camera_result = extract_camera_trajectory(
-        model=model,
-        video_model_rgb=video_model_rgb,
-        image_hw=(height, width),
-        camera_grid_size=int(args.camera_grid_size),
-        query_chunk_size=int(args.query_chunk_size),
-        umeyama_slide_window=bool(args.umeyama_slide_window),
+    print(
+        f"  Sampled {identity_meta['num_queries']} query points "
+        f"(mask area ratio {identity_meta['mask_area_ratio']:.3f})"
     )
-    with timer("tracking"):
-        print("Tracking identity queries in ref0 world frame...")
-        identity_result = extract_identity_centroid_trajectory(
-            model=model,
-            video_model_rgb=video_model_rgb,
-            identity_uv_norm=identity_uv_norm,
-            query_chunk_size=int(args.query_chunk_size),
-            umeyama_slide_window=bool(args.umeyama_slide_window),
-        )
-    camera_xyz_world = camera_result["camera_xyz_world"]
-    identity_xyz_world = identity_result["identity_xyz_world"]
 
-    print_trajectory_summary(camera_xyz_world, identity_xyz_world, identity_meta=identity_meta)
+    if args.model == "opend4rt":
+        cfg = load_yaml_config(args.config)
+        image_size = cfg.get_path("model.input.image_size", [256, 256])
+        image_hw = (int(image_size[0]), int(image_size[1]))
+        identity_uv_norm = uv_px_to_norm(identity_uv_px, width=width, height=height)
+        with timer(f"opend4rt {num_frames}"):
+            result = run_opend4rt_backend(
+                config_path=args.config,
+                ckpt_path=args.ckpt_path,
+                device=device,
+                video_rgb=video_rgb,
+                identity_uv_px=identity_uv_px,
+                identity_uv_norm=identity_uv_norm,
+                image_hw=image_hw,
+                video_hw=(height, width),
+                camera_grid_size=int(args.camera_grid_size),
+                query_chunk_size=int(args.query_chunk_size),
+                umeyama_slide_window=bool(args.umeyama_slide_window),
+            )
+    else:
+        with timer(f"spatracker {num_frames}"):
+            result = run_spatrackerv2_backend(
+                device=device,
+                video_tensor=video_tensor,
+                identity_uv_px=identity_uv_px,
+                video_hw=(height, width),
+                front_ckpt=args.spatrack_front_ckpt,
+                tracker_ckpt=args.spatrack_tracker_ckpt,
+            )
+
+    print_trajectory_summary(
+        result.camera_xyz_world,
+        result.identity_xyz_world,
+        identity_meta=identity_meta,
+    )
 
     if args.output_npz:
-        save_trajectories_npz(
-            args.output_npz,
-            camera_xyz_world=camera_xyz_world,
-            identity_xyz_world=identity_xyz_world,
-            t_ref0_cam=camera_result["T_ref0_cam"],
-            k_seq=camera_result["K"],
-            tracks_xyz_ref0=identity_result["tracks_xyz_ref0"],
-            tracks_visibility=identity_result["tracks_visibility"],
-            identity_uv_px=identity_uv_px,
-            video_height=height,
-            video_width=width,
-        )
+        save_trajectories_npz(args.output_npz, **result.to_npz_kwargs(video_height=height, video_width=width))
 
     return 0
 
