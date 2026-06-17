@@ -541,7 +541,6 @@ def main() -> int:
             query_chunk_size=int(args.query_chunk_size),
             umeyama_slide_window=bool(args.umeyama_slide_window),
         )
-
     camera_xyz_world = camera_result["camera_xyz_world"]
     identity_xyz_world = identity_result["identity_xyz_world"]
 
