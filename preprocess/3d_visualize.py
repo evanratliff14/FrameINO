@@ -102,7 +102,7 @@ from vis.build_like_demo import _predict_camera_branches  # noqa: E402
 # =============================================================================
 
 
-def read_video_to_tensor(video_path: str | Path, sample_step: int = 5, max_frames: int | None = None) -> torch.Tensor:
+def read_video_to_tensor(video_path: str | Path, sample_step: int = 10, max_frames: int | None = None) -> torch.Tensor:
     """
     Load video frames as a float-ready tensor [T, C, H, W] in RGB order.
 
@@ -488,6 +488,7 @@ def parse_args() -> argparse.Namespace:
         help="Stitch long sequences with Umeyama Sim(3) sliding windows (clip > 48 frames).",
     )
     parser.add_argument("--output_npz", type=str, default=None, help="Path to save trajectory NPZ for offline viewing.")
+    parser.add_argument("--sample_step", type=int, default=None, help="Range function third argument to contruct frames for tracking")
     return parser.parse_args()
 
 
@@ -500,7 +501,7 @@ def main() -> int:
         raise FileNotFoundError(video_path)
 
     print(f"Loading video: {video_path}")
-    video_tensor = read_video_to_tensor(video_path, max_frames=int(args.num_frames))
+    video_tensor = read_video_to_tensor(video_path, sample_step=args.sample_step, max_frames=int(args.num_frames))
     video_rgb = tensor_to_video_rgb(video_tensor)
     num_frames, height, width = int(video_rgb.shape[0]), int(video_rgb.shape[1]), int(video_rgb.shape[2])
     print(f"  Frames: {num_frames}, resolution: {width}x{height}")
