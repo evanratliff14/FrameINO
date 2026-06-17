@@ -12,6 +12,20 @@ Coordinate convention (OpenD4RT / data_schema.md):
   - tracks_xyz_ref0[q, t] are 3D points in the same ref0 world frame.
 
 Scale is model-relative (no metric GT); trajectories show relative motion structure.
+
+```
+conda activate oneformer   # required for person segmentation
+pip install viser          # if not already installed
+python preprocess/3d_visualize.py \
+  --video_path /scratch/uft5by/OpenVid-1M/videos/jVLGXDjrQ0Q_40_0to134.mp4 \
+  --ckpt_path /home/uft5by/FrameINO/preprocess/Open_d4rt/checkpoints/OpenD4RT_48CLIP_9Mix_NoCropAUG/opend4rt.ckpt \
+  --config preprocess/Open_d4rt/configs/model_effective.yaml \
+  --num_frames 64 \
+  --umeyama_slide_window \
+  --output_npz /tmp/trajectories.npz
+
+```
+
 """
 
 from __future__ import annotations
@@ -28,6 +42,8 @@ import numpy as np
 import torch
 from decord import VideoReader, cpu
 from sklearn.cluster import KMeans
+import cv2
+import os
 
 # ---------------------------------------------------------------------------
 # Path setup: OpenD4RT (nested repo) + FrameINO root (for OneFormer helpers).
@@ -35,6 +51,40 @@ from sklearn.cluster import KMeans
 PREPROCESS_ROOT = Path(__file__).resolve().parent
 REPO_ROOT = PREPROCESS_ROOT.parent
 OPEN_D4RT_ROOT = PREPROCESS_ROOT / "Open_d4rt"
+
+MOTIONABLE_OBJECT = [
+                        'person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train', 'truck', 'boat',
+                        'bird', 'cat', 'dog', 'horse', 'sheep', 'cow', 'elephant', 'bear', 'zebra', 'giraffe', 
+                        'sports ball', 'kite', 'flower', 
+                        # We delete:
+                        # Belows are newly added cases
+                        'snowboard', 'surfboard', 'skateboard',
+                    ]
+
+# NOTE: We want to make it simpler for the object motion CTRL case, so neglect some that may be useful in the Camera CTRL
+REFERENCE_OBJECT_CLASS = [
+                            'person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train', 'truck', 'boat', 
+                            'bird', 'cat', 'dog', 
+                            'horse', 'sheep', 'cow', 'elephant', 'bear', 'zebra', 'giraffe', 'backpack', 'umbrella', 
+                            'handbag', 'tie', 'suitcase', 'frisbee', 'skis', 'snowboard', 'sports ball', 'kite', 'baseball bat', 
+                            'baseball glove', 'skateboard', 'surfboard', 'tennis racket', 'bottle', 'wine glass', 'cup', 'fork', 
+                            'knife', 'spoon', 'bowl', 'banana', 'apple', 'sandwich', 'orange', 'broccoli', 'carrot', 'hot dog', 
+                            'pizza', 'donut', 'cake', 'chair', 'dining table', 'laptop', 'mouse', 'remote', 
+                            'keyboard', 'cell phone', 'book', 'clock', 
+                            'scissors', 'teddy bear', 'hair drier', 'toothbrush', 'blanket', 'cardboard', 'counter',
+                            'flower', 'fruit', 'pillow', 'towel', 'food-other-merged', 'door-stuff',
+                        ]
+
+NON_OBJECT_CLASS = [
+                        'microwave', 'oven', 'toaster', 'sink', 'refrigerator', 'tv', 'potted plant', 'couch', 'parking meter', 'fire hydrant', 'stop sign',
+                        'toilet', 'banner', 'net', 'platform', 'road', 'snow', 'sea', 'railroad', 'roof', 'traffic light', 'bench', 
+                        'floor-wood', 'gravel', 'light', 'playingfield', 'mountain-merged', 'water-other', 'wall-brick', 'wall-stone', 
+                        'wall-tile', 'rock-merged', 'mirror-stuff', 'sand', 'bed', 'bridge', 'stairs', 'house', 'vase', 'curtain',
+                        'grass-merged', 'dirt-merged', 'paper-merged', 'window-blind', 'building-other-merged',  'shelf', 'tent',
+                        'wall-other-merged', 'rug-merged', 'river', 'window-other', 'fence-merged', 'ceiling-merged', 'tree-merged', 
+                        'sky-other-merged', 'cabinet-merged', 'table-merged', 'floor-other-merged', 'pavement-merged', 'wall-wood', 
+                    ]
+
 
 for path in (OPEN_D4RT_ROOT, REPO_ROOT):
     path_str = str(path)
@@ -155,7 +205,6 @@ def _ensure_oneformer() -> None:
 def sample_identity_uv_queries(
     frame0_rgb: np.ndarray,
     *,
-    class_name: str = "person",
     num_queries: int = 48,
     min_mask_area_ratio: float = 0.005,
     max_mask_area_ratio: float = 0.85,
@@ -172,11 +221,20 @@ def sample_identity_uv_queries(
 
     _ensure_oneformer()
     frame = np.asarray(frame0_rgb, dtype=np.uint8)
+    # array_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+
+    # output_path = Path.cwd() / "frame.png"
+
+    # cv2.imwrite(str(output_path), array_bgr)
+
+
     height, width = int(frame.shape[0]), int(frame.shape[1])
+
 
     panoptic_seg, segments_info, metadata = segment(
         frame, _ONEFORMER_DATASET, _ONEFORMER_BACKBONE, debug=False
     )
+    print(panoptic_seg, segments_info, metadata)
     height_pan, width_pan = panoptic_seg.shape
 
     best_area = 0.0
@@ -185,7 +243,7 @@ def sample_identity_uv_queries(
     for segment_info in segments_info:
         category_id = int(segment_info["category_id"])
         text_name = metadata.stuff_classes[category_id]
-        if text_name != class_name:
+        if text_name not in MOTIONABLE_OBJECT:
             continue
         seg_id = int(segment_info["id"])
         mask = (panoptic_seg == seg_id).cpu().numpy()
@@ -199,28 +257,32 @@ def sample_identity_uv_queries(
 
     if best_mask is None:
         raise RuntimeError(
-            f"No '{class_name}' instance found in frame 0. "
+            f"No motionable object instance found in frame 0. "
             "Try another video or class, or run with `conda activate oneformer`."
         )
 
-    # Collect mask pixel coordinates in panoptic resolution, subsample for K-means.
+    # Collect mask pixel coordinates (tuples) in panoptic resolution, subsample for K-means.
     ys, xs = np.where(best_mask)
     if ys.size == 0:
-        raise RuntimeError(f"Empty mask for '{class_name}' in frame 0.")
+        raise RuntimeError(f"Empty mask for class in frame 0.")
 
     rng = np.random.default_rng(0)
     max_pool = min(ys.size, 5000)
     if ys.size > max_pool:
         pick = rng.choice(ys.size, size=max_pool, replace=False)
+        # get same indices of ys, xs, equivalent to choosing multiple points from mask
         ys, xs = ys[pick], xs[pick]
 
     points_pan = np.stack([ys, xs], axis=1).astype(np.float64)
-    n_clusters = max(1, min(int(num_queries), points_pan.shape[0]))
+    n_clusters = max(1, min(int(num_queries), points_pan.shape[0])) # we limit to n_queries and then enforce that it should be >1
+    # we cluster to try to get an evenly spread distribution of points without the overhead of law of large num
     centers = KMeans(n_clusters=n_clusters, random_state=0, n_init="auto").fit(points_pan).cluster_centers_
+    # round raw centroid to nearest pixel
     centers = np.rint(centers).astype(np.int64)
 
     uv_px: list[list[float]] = []
     for cord_y, cord_x in centers:
+        # we enforce that each center must be a trackable point
         if not best_mask[cord_y, cord_x]:
             continue
         # Map panoptic coords back to original frame resolution.
@@ -229,7 +291,7 @@ def sample_identity_uv_queries(
         uv_px.append([float(x_orig), float(y_orig)])
 
     if len(uv_px) == 0:
-        raise RuntimeError(f"K-means produced no in-mask query points for '{class_name}'.")
+        raise RuntimeError(f"K-means produced no in-mask query points for {best_label}.")
 
     out = np.asarray(uv_px, dtype=np.float32)
     meta = {
@@ -237,6 +299,7 @@ def sample_identity_uv_queries(
         "mask_area_ratio": best_area,
         "num_queries": int(out.shape[0]),
     }
+    print(meta)
     return out, meta
 
 
@@ -351,7 +414,7 @@ def print_trajectory_summary(
     *,
     identity_meta: dict[str, Any],
 ) -> None:
-    """Print a concise summary for mentor-facing stdout output."""
+    """Print a concise summary for stdout output."""
     print("\n=== Trajectory summary (ref0 world frame, model-relative scale) ===")
     print(f"Identity class: {identity_meta.get('class_name', '?')} "
           f"({identity_meta.get('num_queries', '?')} query points)")
@@ -381,8 +444,11 @@ def save_trajectories_npz(
     identity_uv_px: np.ndarray,
 ) -> None:
     """Persist all trajectory arrays for offline analysis."""
+    out_path = Path(__file__).resolve().parent / output_path
+    if not out_path.exists():
+        os.makedirs(str(out_path.parent))
     np.savez_compressed(
-        str(output_path),
+        str(Path(__file__).resolve().parent / output_path),
         camera_xyz_world=camera_xyz_world.astype(np.float32),
         identity_xyz_world=identity_xyz_world.astype(np.float32),
         T_ref0_cam=t_ref0_cam.astype(np.float32),
@@ -391,7 +457,7 @@ def save_trajectories_npz(
         tracks_visibility=tracks_visibility.astype(bool),
         identity_uv_px=identity_uv_px.astype(np.float32),
     )
-    print(f"Saved trajectories to {output_path}")
+    print(f"Saved trajectories to {Path(__file__).resolve().parent / output_path}")
 
 
 # =============================================================================
@@ -488,6 +554,8 @@ def run_viser_demo(
         radius = max(radius, 0.5)
     else:
         radius = 1.0
+    
+    print(f"Received scene scale of {radius}")
 
     server = viser.ViserServer(host=host, port=int(port))
     print(f"Viser demo running at http://localhost:{port}")
@@ -616,17 +684,14 @@ def run_viser_demo(
     def _(_) -> None:
         render()
 
-    render()
-
-    while True:
-        if bool(play_cb.value):
-            with render_lock:
-                nxt = (int(frame_slider.value) + 1) % max(num_frames, 1)
-                frame_slider.value = nxt
-            render()
-            time.sleep(1.0 / max(float(fps_slider.value), 1.0))
-        else:
-            time.sleep(0.05)
+    # Instead of blocking forever inside a flat while loop, 
+    # let viser handle its own internal loop threads or wait safely:
+    print("Viser dashboard active. Press Ctrl+C to terminate.")
+    try:
+        while True:
+            time.sleep(1.0)
+    except KeyboardInterrupt:
+        print("Shutting down viewer...")
 
 
 # =============================================================================
@@ -644,7 +709,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ckpt_path", type=str, required=True, help="D4RT checkpoint path.")
     parser.add_argument("--num_frames", type=int, default=64, help="Max frames to process.")
     parser.add_argument("--device", type=str, default="auto", choices=("auto", "cuda", "cpu"))
-    parser.add_argument("--identity_class", type=str, default="person", help="OneFormer class for identity.")
     parser.add_argument("--num_identity_queries", type=int, default=48, help="UV query points on identity mask.")
     parser.add_argument("--query_chunk_size", type=int, default=1024)
     parser.add_argument("--camera_grid_size", type=int, default=16, help="Coarse grid for camera branch queries.")
@@ -682,10 +746,9 @@ def main() -> int:
     print(f"Loading D4RT model from {args.ckpt_path}")
     model = load_d4rt_model(args.config, args.ckpt_path, device)
 
-    print(f"Segmenting frame-0 '{args.identity_class}' with OneFormer...")
+    print(f"Segmenting frame-0 with OneFormer...")
     identity_uv_px, identity_meta = sample_identity_uv_queries(
         video_rgb[0],
-        class_name=str(args.identity_class),
         num_queries=int(args.num_identity_queries),
     )
     identity_uv_norm = uv_px_to_norm(identity_uv_px, width=width, height=height)

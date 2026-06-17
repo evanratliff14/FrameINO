@@ -128,7 +128,7 @@ NON_OBJECT_CLASS = [
                         'wall-other-merged', 'rug-merged', 'river', 'window-other', 'fence-merged', 'ceiling-merged', 'tree-merged', 
                         'sky-other-merged', 'cabinet-merged', 'table-merged', 'floor-other-merged', 'pavement-merged', 'wall-wood', 
                     ]
-
+metadata = None
 
 def setup_modules():
 
