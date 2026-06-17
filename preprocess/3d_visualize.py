@@ -14,6 +14,8 @@ Coordinate convention (OpenD4RT / data_schema.md):
 Scale is model-relative (no metric GT); trajectories show relative motion structure.
 Export NPZ with --output_npz, then view locally via offline_view_3d_demo.py.
 
+python preprocess/3d_visualize.py   --video_path /home/uft5by/FrameINO/preprocess/1917.mp4   --ckpt_path /home/uft5by/FrameINO/preprocess/Open_d4rt/checkpoints/OpenD4RT_48CLIP_9Mix_NoCropAUG/opend4rt.ckpt   --config preprocess/Open_d4rt/configs/model_effective.yaml   --num_frames 10000   --umeyama_slide_window   --output_npz tmp/trajectories.npz
+
 """
 
 from __future__ import annotations
@@ -28,6 +30,15 @@ import torch
 from decord import VideoReader, cpu
 from sklearn.cluster import KMeans
 import cv2
+import time
+from contextlib import contextmanager
+
+@contextmanager
+def timer(block_name):
+    start = time.perf_counter()
+    yield
+    end = time.perf_counter()
+    print(f"[{block_name}] Execution time: {end - start:.4f} seconds")
 
 # ---------------------------------------------------------------------------
 # Path setup: OpenD4RT (nested repo) + FrameINO root (for OneFormer helpers).
@@ -91,17 +102,19 @@ from vis.build_like_demo import _predict_camera_branches  # noqa: E402
 # =============================================================================
 
 
-def read_video_to_tensor(video_path: str | Path, max_frames: int | None = None) -> torch.Tensor:
+def read_video_to_tensor(video_path: str | Path, sample_step: int = 5, max_frames: int | None = None) -> torch.Tensor:
     """
     Load video frames as a float-ready tensor [T, C, H, W] in RGB order.
 
     Decord reads on CPU for stability; cap frames with max_frames to limit memory.
+    Uniformly sample every sample_step frames
     """
     vr = VideoReader(str(video_path), ctx=cpu(0))
     num_frames = len(vr)
     if max_frames is not None and int(max_frames) > 0:
         num_frames = min(num_frames, int(max_frames))
-    tensor_frames = vr.get_batch(range(num_frames))
+    # load frames efficiently
+    tensor_frames = vr.get_batch(range(0, num_frames*sample_step, sample_step))
     tensor = torch.from_numpy(tensor_frames.asnumpy())
     return tensor.permute(0, 3, 1, 2)
 
@@ -214,11 +227,10 @@ def sample_identity_uv_queries(
 
     height, width = int(frame.shape[0]), int(frame.shape[1])
 
-
-    panoptic_seg, segments_info, metadata = segment(
-        frame, _ONEFORMER_DATASET, _ONEFORMER_BACKBONE, debug=False
-    )
-    print(panoptic_seg, segments_info, metadata)
+    with timer("segment_model"):
+        panoptic_seg, segments_info, metadata = segment(
+            frame, _ONEFORMER_DATASET, _ONEFORMER_BACKBONE, debug=False
+        )
     height_pan, width_pan = panoptic_seg.shape
 
     best_area = 0.0
@@ -283,7 +295,6 @@ def sample_identity_uv_queries(
         "mask_area_ratio": best_area,
         "num_queries": int(out.shape[0]),
     }
-    print(meta)
     return out, meta
 
 
@@ -520,15 +531,15 @@ def main() -> int:
         query_chunk_size=int(args.query_chunk_size),
         umeyama_slide_window=bool(args.umeyama_slide_window),
     )
-
-    print("Tracking identity queries in ref0 world frame...")
-    identity_result = extract_identity_centroid_trajectory(
-        model=model,
-        video_model_rgb=video_model_rgb,
-        identity_uv_norm=identity_uv_norm,
-        query_chunk_size=int(args.query_chunk_size),
-        umeyama_slide_window=bool(args.umeyama_slide_window),
-    )
+    with timer("tracking"):
+        print("Tracking identity queries in ref0 world frame...")
+        identity_result = extract_identity_centroid_trajectory(
+            model=model,
+            video_model_rgb=video_model_rgb,
+            identity_uv_norm=identity_uv_norm,
+            query_chunk_size=int(args.query_chunk_size),
+            umeyama_slide_window=bool(args.umeyama_slide_window),
+        )
 
     camera_xyz_world = camera_result["camera_xyz_world"]
     identity_xyz_world = identity_result["identity_xyz_world"]
