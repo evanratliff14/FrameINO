@@ -37,7 +37,7 @@ R_OPENCV_TO_VIEWER = np.array(
 # =============================================================================
 
 
-def load_video_frames(video_path: Path, max_frames: int | None = None) -> np.ndarray:
+def load_video_frames(video_path: Path, sample_step: int = 5, max_frames: int | None = None) -> np.ndarray:
     """Load video frames as uint8 RGB [T, H, W, 3] via OpenCV."""
     if not video_path.exists():
         raise FileNotFoundError(f"Video file not found at: {video_path}")
@@ -55,7 +55,9 @@ def load_video_frames(video_path: Path, max_frames: int | None = None) -> np.nda
 
     if not frames:
         raise RuntimeError(f"Could not read any frames from {video_path}")
-    return np.stack(frames, axis=0)
+    frames = np.stack(frames, axis=0)
+    frames = frames[:: sample_step, :,:,:]
+    return frames
 
 
 # =============================================================================
