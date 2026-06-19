@@ -17,8 +17,8 @@ csv.field_size_limit(sys.maxsize)
 if __name__ == "__main__":
     
     # Basic Setting
-    csv_folder_path = "/PATH/TO/CSV_FOLDER/general_dataset_scoring_img"                   # Input
-    store_folder_path = "/PATH/TO/CSV_FOLDER/general_dataset_scoring_img_left"            # Output
+    csv_folder_path = "/scratch/uft5by/OpenVid-1M/csv/general_dataset_scoring_img"                   # Input
+    store_folder_path = "/scratch/uft5by/OpenVid-1M/csv/general_dataset_scoring_img_left"            # Output
 
 
     # New General Setting
