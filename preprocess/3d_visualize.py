@@ -30,7 +30,6 @@ from __future__ import annotations
 
 import argparse
 import sys
-import types
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -56,6 +55,7 @@ def timer(block_name):
 PREPROCESS_ROOT = Path(__file__).resolve().parent
 REPO_ROOT = PREPROCESS_ROOT.parent
 OPEN_D4RT_ROOT = PREPROCESS_ROOT / "Open_d4rt"
+SPATRACKER_ROOT = PREPROCESS_ROOT / "SpaTrackerV2"
 
 MOTIONABLE_OBJECT = [
                         'person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train', 'truck', 'boat',
@@ -539,39 +539,50 @@ def run_opend4rt_backend(
 # Backend: SpaTrackV2
 # =============================================================================
 
-_SPATRACK_SHIM_INSTALLED = False
+_SPATRACKER_PATH_INSTALLED = False
 
 
-def _install_spatrack_import_shim() -> None:
-    """Map models.SpaTrackV2.* imports to vendored SpaTrackV2_code paths."""
-    global _SPATRACK_SHIM_INSTALLED
-    if _SPATRACK_SHIM_INSTALLED:
+def _ensure_spatracker_path() -> None:
+    """Add preprocess/SpaTrackerV2 to sys.path for upstream models.SpaTrackV2 imports."""
+    global _SPATRACKER_PATH_INSTALLED
+    if _SPATRACKER_PATH_INSTALLED:
         return
+    root = str(SPATRACKER_ROOT)
+    if root not in sys.path:
+        sys.path.insert(0, root)
+    _SPATRACKER_PATH_INSTALLED = True
 
-    code_root = PREPROCESS_ROOT / "SpaTrackV2_code"
-    repo_str = str(REPO_ROOT)
-    if repo_str not in sys.path:
-        sys.path.insert(0, repo_str)
 
-    models_pkg = sys.modules.get("models")
-    if models_pkg is None:
-        models_pkg = types.ModuleType("models")
-        models_pkg.__path__ = []
-        sys.modules["models"] = models_pkg
+def _scale_uv_to_preprocessed(
+    uv_px: np.ndarray,
+    orig_hw: tuple[int, int],
+    proc_hw: tuple[int, int],
+) -> np.ndarray:
+    """Map pixel UV from original video resolution to preprocessed tracker resolution."""
+    orig_h, orig_w = orig_hw
+    proc_h, proc_w = proc_hw
+    scaled = np.asarray(uv_px, dtype=np.float32).copy()
+    scaled[:, 0] *= float(proc_w) / float(max(orig_w, 1))
+    scaled[:, 1] *= float(proc_h) / float(max(orig_h, 1))
+    return scaled
 
-    spatrack_pkg = types.ModuleType("models.SpaTrackV2")
-    spatrack_pkg.__path__ = [str(code_root)]
-    sys.modules["models.SpaTrackV2"] = spatrack_pkg
 
-    spatrack_models = types.ModuleType("models.SpaTrackV2.models")
-    spatrack_models.__path__ = [str(code_root / "models")]
-    sys.modules["models.SpaTrackV2.models"] = spatrack_models
-
-    spatrack_utils = types.ModuleType("models.SpaTrackV2.utils")
-    spatrack_utils.__path__ = [str(code_root / "utils")]
-    sys.modules["models.SpaTrackV2.utils"] = spatrack_utils
-
-    _SPATRACK_SHIM_INSTALLED = True
+def _scale_intrinsics_to_original(
+    k_seq: np.ndarray,
+    orig_hw: tuple[int, int],
+    proc_hw: tuple[int, int],
+) -> np.ndarray:
+    """Scale K from preprocessed tracker resolution back to original video resolution."""
+    orig_h, orig_w = orig_hw
+    proc_h, proc_w = proc_hw
+    k = np.asarray(k_seq, dtype=np.float32).copy()
+    scale_x = float(orig_w) / float(max(proc_w, 1))
+    scale_y = float(orig_h) / float(max(proc_h, 1))
+    k[:, 0, 0] *= scale_x
+    k[:, 0, 2] *= scale_x
+    k[:, 1, 1] *= scale_y
+    k[:, 1, 2] *= scale_y
+    return k
 
 
 def _build_spatrack_queries(identity_uv_px: np.ndarray) -> np.ndarray:
@@ -594,10 +605,10 @@ def run_spatrackerv2_backend(
     Run SpaTrackV2 VGGT4Track front-end + Predictor tracking.
     Converts outputs to ref0 OpenCV NPZ convention internally.
     """
-    _install_spatrack_import_shim()
-    from preprocess.SpaTrackV2_code.models.predictor import Predictor
-    from preprocess.SpaTrackV2_code.models.vggt4track.models.vggt_moe import VGGT4Track
-    from preprocess.SpaTrackV2_code.models.vggt4track.utils.load_fn import preprocess_image
+    _ensure_spatracker_path()
+    from models.SpaTrackV2.models.predictor import Predictor
+    from models.SpaTrackV2.models.vggt4track.models.vggt_moe import VGGT4Track
+    from models.SpaTrackV2.models.vggt4track.utils.load_fn import preprocess_image
 
     height, width = video_hw
     num_frames = int(video_tensor.shape[0])
@@ -610,15 +621,18 @@ def run_spatrackerv2_backend(
     tracker_model = Predictor.from_pretrained(tracker_ckpt)
     tracker_model.eval().to(device)
 
+    # Keep 0-255 float on GPU (decord convention); preprocess before front-end + tracker.
     video = video_tensor.float().to(device)
-    if video.max() > 1.0 + 1e-3:
-        video = video / 255.0
+    video_proc = preprocess_image(video)[None]
+    video_for_tracker = video_proc.squeeze(0)
+
+    proc_h = int(video_for_tracker.shape[2])
+    proc_w = int(video_for_tracker.shape[3])
 
     print("Running VGGT4Track front-end (camera, depth)...")
     with torch.no_grad():
-        video_proc = preprocess_image(video)[None]
         with torch.cuda.amp.autocast(dtype=torch.bfloat16, enabled=device.type == "cuda"):
-            predictions = vggt4track_model(video_proc)
+            predictions = vggt4track_model(video_proc / 255.0)
             extrinsic = predictions["poses_pred"]
             intrinsic = predictions["intrs"]
             depth_map = predictions["points_map"][..., 2]
@@ -629,8 +643,14 @@ def run_spatrackerv2_backend(
     intrs = intrinsic.squeeze().detach().cpu().numpy()
     unc_metric = (depth_conf.squeeze().detach().cpu().numpy() > 0.5).astype(np.float32)
 
-    query_xyt = _build_spatrack_queries(identity_uv_px)
-    print(f"  SpaTrack queries: {query_xyt.shape[0]} points at frame 0")
+    scaled_uv = _scale_uv_to_preprocessed(
+        identity_uv_px,
+        orig_hw=(height, width),
+        proc_hw=(proc_h, proc_w),
+    )
+    query_xyt = _build_spatrack_queries(scaled_uv)
+    print(f"  SpaTrack queries: {query_xyt.shape[0]} points at frame 0 "
+          f"(proc resolution {proc_w}x{proc_h})")
 
     print("Running SpaTrackV2 Predictor (joint 3D tracking)...")
     with torch.no_grad():
@@ -646,7 +666,7 @@ def run_spatrackerv2_backend(
                 _conf_pred,
                 _video_out,
             ) = tracker_model.forward(
-                video,
+                video_for_tracker,
                 depth=depth_tensor,
                 intrs=intrs,
                 extrs=extrs,
@@ -678,6 +698,11 @@ def run_spatrackerv2_backend(
     k_seq = intrs_out.detach().cpu().numpy().astype(np.float32)
     if k_seq.shape[0] != num_frames:
         k_seq = k_seq[:num_frames]
+    k_seq = _scale_intrinsics_to_original(
+        k_seq,
+        orig_hw=(height, width),
+        proc_hw=(proc_h, proc_w),
+    )
 
     identity_xyz_world = compute_identity_centroid(tracks_xyz_ref0, tracks_visibility)
 
