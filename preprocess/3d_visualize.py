@@ -834,7 +834,7 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Stitch long sequences with Umeyama Sim(3) sliding windows (clip > 48 frames).",
     )
-    parser.add_argument("--output_npz", type=str, default=None, help="Path to save trajectory NPZ for offline viewing.")
+    parser.add_argument("--output_npz", type=str, default=None, required = True, help="Path to save trajectory NPZ for offline viewing.")
     parser.add_argument(
         "--sample_step",
         type=int,
