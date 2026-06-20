@@ -1,0 +1,24 @@
+Loading video: preprocess/media/1917.mp4
+  Frames: 32, resolution: 640x360
+Loading D4RT model from /home/uft5by/FrameINO/preprocess/Open_d4rt/checkpoints/OpenD4RT_48CLIP_9Mix_NoCropAUG/opend4rt.ckpt
+Estimating camera trajectory (Umeyama extrinsics + intrinsics)...
+Tracking identity queries in ref0 world frame...
+[tracking] Execution time: 0.7658 seconds
+[opend4rt 32] Execution time: 31.6977 seconds
+
+=== Trajectory summary (ref0 world frame, model-relative scale) ===
+Identity class: person (24 query points)
+
+Camera:
+  Valid frames: 32/32
+  Start xyz: [0.0000, 0.0000, 0.0000]
+  End   xyz: [1.1079, 0.3622, 0.3754]
+  Path length: 2.8954
+
+Identity centroid:
+  Valid frames: 32/32
+  Start xyz: [-0.2818, 0.0501, 1.5033]
+  End   xyz: [-0.1482, 0.0291, 1.5888]
+  Path length: 1.2945
+
+Saved trajectories to /sfs/gpfs/tardis/home/uft5by/FrameINO/preprocess/tmp/1917_opend4rt.npz
