@@ -18,11 +18,11 @@ Coordinate convention (ref0_opencv_t0_identity):
 Scale is model-relative (no metric GT); trajectories show relative motion structure.
 Export NPZ with --output_npz, then view locally via offline_view_3d_demo.py.
 
-python preprocess/3d_visualize.py --model opend4rt --video_path preprocess/1917.mp4 \\
+python preprocess/3d_visualize.py --model opend4rt --video_path preprocess/1917.mp4
   --ckpt_path preprocess/Open_d4rt/checkpoints/.../opend4rt.ckpt --output_npz tmp/trajectories.npz
 
-python preprocess/3d_visualize.py --model spatrackerv2 --video_path preprocess/1917.mp4 \\
-  --output_npz tmp/spatrack_trajectories.npz
+python preprocess/3d_visualize.py --model spatrackerv2 --video_path preprocess/media/1917.mp4
+  --output_npz preprocess/tmp/spatrack_trajectories.npz
 
 """
 
@@ -41,6 +41,7 @@ from sklearn.cluster import KMeans
 import cv2
 import time
 from contextlib import contextmanager
+import json
 
 @contextmanager
 def timer(block_name):
@@ -801,6 +802,7 @@ def parse_args() -> argparse.Namespace:
         description="3D camera + identity centroid trajectory demo (OpenD4RT or SpaTrackV2 + OneFormer)."
     )
     parser.add_argument("--video_path", type=str, required=True, help="Input video path.")
+    parser.add_argument("--segment", action='store_true', help="Whether to create or overwrite existing segment JSON. Evaluates to true if typed, false if not.")
     parser.add_argument(
         "--model",
         type=str,
@@ -824,7 +826,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--num_frames", type=int, default=64, help="Max frames to process.")
     parser.add_argument("--device", type=str, default="auto", choices=("auto", "cuda", "cpu"))
-    parser.add_argument("--num_identity_queries", type=int, default=48, help="UV query points on identity mask.")
+    parser.add_argument("--num_identity_queries", type=int, default=24, help="UV query points on identity mask.")
     parser.add_argument("--query_chunk_size", type=int, default=1024)
     parser.add_argument("--camera_grid_size", type=int, default=16, help="Coarse grid for camera branch queries.")
     parser.add_argument(
@@ -857,17 +859,40 @@ def main() -> int:
     video_tensor = read_video_to_tensor(video_path, sample_step=args.sample_step, max_frames=int(args.num_frames))
     video_rgb = tensor_to_video_rgb(video_tensor)
     num_frames, height, width = int(video_rgb.shape[0]), int(video_rgb.shape[1]), int(video_rgb.shape[2])
+
+    # path to temporary npy file
+    script_dir = Path(__file__).resolve().parent
+
+    output_path = script_dir / "persistent"
+    
     print(f"  Frames: {num_frames}, resolution: {width}x{height}")
 
-    print("Segmenting frame-0 with OneFormer...")
-    identity_uv_px, identity_meta = sample_identity_uv_queries(
-        video_rgb[0],
-        num_queries=int(args.num_identity_queries),
-    )
-    print(
-        f"  Sampled {identity_meta['num_queries']} query points "
-        f"(mask area ratio {identity_meta['mask_area_ratio']:.3f})"
-    )
+    if args.segment:
+
+
+        print("Segmenting frame-0 with OneFormer...")
+        identity_uv_px, identity_meta = sample_identity_uv_queries(
+            video_rgb[0],
+            num_queries=int(args.num_identity_queries),
+        )
+        print(
+            f"  Sampled {identity_meta['num_queries']} query points "
+            f"(mask area ratio {identity_meta['mask_area_ratio']:.3f})"
+        )
+
+
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # 4. Save your numpy array
+        np.save(output_path /  "identity_uv_px.npy", identity_uv_px)
+        with open(output_path / "identity_meta.json", "w") as f:
+            json.dump(identity_meta, f, indent=4)
+
+        return
+
+    identity_uv_px = np.load(output_path / "identity_uv_px.npy")
+    with open(output_path / "identity_meta.json", "r") as f:
+        identity_meta = json.load(f)
 
     if args.model == "opend4rt":
         cfg = load_yaml_config(args.config)

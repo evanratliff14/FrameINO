@@ -212,7 +212,7 @@ class MoGeModel(nn.Module):
         return next(self.parameters()).dtype
 
     @classmethod
-    def from_pretrained(cls, pretrained_model_name_or_path: Union[str, Path, IO[bytes]], model_kwargs: Optional[Dict[str, Any]] = None, **hf_kwargs) -> 'MoGeModel':
+    def from_pretrained(cls, pretrained_model_name_or_path: Union[str, 'Path', 'IO[bytes]'], model_kwargs: Optional[Dict[str, Any]] = None, **hf_kwargs) -> 'MoGeModel':
         """
         Load a model from a checkpoint file.
 

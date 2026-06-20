@@ -1,0 +1,26 @@
+Loading video: /home/uft5by/FrameINO/preprocess/1917.mp4
+  Frames: 500, resolution: 640x360
+Loading D4RT model from /home/uft5by/FrameINO/preprocess/Open_d4rt/checkpoints/OpenD4RT_48CLIP_9Mix_NoCropAUG/opend4rt.ckpt
+Segmenting frame-0 with OneFormer...
+[segment_model] Execution time: 0.7462 seconds
+  Sampled 48 query points (mask area ratio 0.262)
+Estimating camera trajectory (Umeyama extrinsics + intrinsics)...
+Tracking identity queries in ref0 world frame...
+[tracking] Execution time: 556.7975 seconds
+
+=== Trajectory summary (ref0 world frame, model-relative scale) ===
+Identity class: person (48 query points)
+
+Camera:
+  Valid frames: 500/500
+  Start xyz: [0.0000, 0.0000, 0.0000]
+  End   xyz: [-1.4771, -2.8864, 4.1823]
+  Path length: 14.4561
+
+Identity centroid:
+  Valid frames: 248/500
+  Start xyz: [-0.3092, 0.0501, 1.5081]
+  End   xyz: [0.1581, -0.0281, 0.6086]
+  Path length: 41.8983
+
+Saved trajectories to /sfs/gpfs/tardis/home/uft5by/FrameINO/preprocess/tmp/1917_5.npz

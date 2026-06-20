@@ -1,0 +1,8 @@
+Loading video: preprocess/media/1917.mp4
+  Frames: 64, resolution: 640x360
+Loading SpaTrackV2 front-end from Yuxihenry/SpatialTrackerV2_Front
+Loading SpaTrackV2 tracker from Yuxihenry/SpatialTrackerV2-Offline
+Running VGGT4Track front-end (camera, depth)...
+  SpaTrack queries: 24 points at frame 0 (proc resolution 518x294)
+Running SpaTrackV2 Predictor (joint 3D tracking)...
+[spatracker 64] Execution time: 71.5635 seconds

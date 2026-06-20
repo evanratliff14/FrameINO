@@ -6,9 +6,35 @@
 
 import torch
 import torch.nn.functional as F
-from easydict import EasyDict as edict
+# from easydict import EasyDict as edict
 from sklearn.decomposition import PCA
 import matplotlib.pyplot as plt
+
+class edict(dict):
+    """A drop-in replacement for easydict.EasyDict that allows dot notation."""
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Recursively convert nested dictionaries to edict instances
+        for key, value in self.items():
+            if isinstance(value, dict) and not isinstance(value, edict):
+                self[key] = edict(value)
+
+    def __getattr__(self, name):
+        try:
+            return self[name]
+        except KeyError:
+            raise AttributeError(f"'edict' object has no attribute '{name}'")
+
+    def __setattr__(self, name, value):
+        if isinstance(value, dict) and not isinstance(value, edict):
+            value = edict(value)
+        self[name] = value
+
+    def __delattr__(self, name):
+        try:
+            del self[name]
+        except KeyError:
+            raise AttributeError(f"'edict' object has no attribute '{name}'")
 
 EPS = 1e-6
 
