@@ -839,7 +839,7 @@ def parse_args() -> argparse.Namespace:
         "--sample_step",
         type=int,
         default=10,
-        help="Subsample every N frames when loading video (default 1).",
+        help="Subsample every N frames when loading video (default 10).",
     )
     return parser.parse_args()
 

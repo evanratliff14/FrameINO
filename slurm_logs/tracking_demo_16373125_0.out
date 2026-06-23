@@ -1,0 +1,25 @@
+Loading video: preprocess/media/scooter.mp4
+  Frames: 32, resolution: 1920x1080
+Loading SpaTrackV2 front-end from Yuxihenry/SpatialTrackerV2_Front
+Loading SpaTrackV2 tracker from Yuxihenry/SpatialTrackerV2-Offline
+Running VGGT4Track front-end (camera, depth)...
+  SpaTrack queries: 24 points at frame 0 (proc resolution 518x294)
+Running SpaTrackV2 Predictor (joint 3D tracking)...
+[spatracker 32] Execution time: 44.9846 seconds
+
+=== Trajectory summary (ref0 world frame, model-relative scale) ===
+Identity class: person (24 query points)
+
+Camera:
+  Valid frames: 32/32
+  Start xyz: [0.0000, 0.0000, 0.0000]
+  End   xyz: [-0.0676, -0.0470, 0.7292]
+  Path length: 0.7644
+
+Identity centroid:
+  Valid frames: 21/32
+  Start xyz: [-0.1524, -0.0552, 1.0819]
+  End   xyz: [-0.2085, -0.0689, 1.4593]
+  Path length: 0.6427
+
+Saved trajectories to /sfs/gpfs/tardis/home/uft5by/FrameINO/preprocess/tmp/scooter_spatrack2.npz
