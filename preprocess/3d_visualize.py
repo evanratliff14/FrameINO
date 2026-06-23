@@ -121,7 +121,7 @@ def read_video_to_tensor(video_path: str | Path, sample_step: int = 10, max_fram
     Uniformly sample every sample_step frames
     """
     vr = VideoReader(str(video_path), ctx=cpu(0))
-    num_frames = len(vr)
+    num_frames = len(vr)//sample_step
     if max_frames is not None and int(max_frames) > 0:
         num_frames = min(num_frames, int(max_frames))
     # load frames efficiently
@@ -884,14 +884,14 @@ def main() -> int:
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
         # 4. Save your numpy array
-        np.save(output_path /  "identity_uv_px.npy", identity_uv_px)
-        with open(output_path / "identity_meta.json", "w") as f:
+        np.save(output_path /  f"{video_path.stem}_identity_uv_px.npy", identity_uv_px)
+        with open(output_path / f"{video_path.stem}_identity_meta.json", "w") as f:
             json.dump(identity_meta, f, indent=4)
 
         return
 
-    identity_uv_px = np.load(output_path / "identity_uv_px.npy")
-    with open(output_path / "identity_meta.json", "r") as f:
+    identity_uv_px = np.load(output_path / f"{video_path.stem}_identity_uv_px.npy")
+    with open(output_path / f"{video_path.stem}_identity_meta.json", "r") as f:
         identity_meta = json.load(f)
 
     if args.model == "opend4rt":

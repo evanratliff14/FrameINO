@@ -1,0 +1,5 @@
+Loading video: preprocess/media/scooter.mp4
+  Frames: 32, resolution: 1920x1080
+Loading SpaTrackV2 front-end from Yuxihenry/SpatialTrackerV2_Front
+Loading SpaTrackV2 tracker from Yuxihenry/SpatialTrackerV2-Offline
+Running VGGT4Track front-end (camera, depth)...

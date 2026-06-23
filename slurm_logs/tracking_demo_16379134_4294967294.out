@@ -1,0 +1,24 @@
+Loading video: preprocess/media/Turtle.mp4
+  Frames: 17, resolution: 1920x1080
+Loading D4RT model from /home/uft5by/FrameINO/preprocess/Open_d4rt/checkpoints/OpenD4RT_48CLIP_9Mix_NoCropAUG/opend4rt.ckpt
+Estimating camera trajectory (Umeyama extrinsics + intrinsics)...
+Tracking identity queries in ref0 world frame...
+[tracking] Execution time: 0.4354 seconds
+[opend4rt 17] Execution time: 41.9124 seconds
+
+=== Trajectory summary (ref0 world frame, model-relative scale) ===
+Identity class: skateboard (4 query points)
+
+Camera:
+  Valid frames: 17/17
+  Start xyz: [0.0000, 0.0000, 0.0000]
+  End   xyz: [-0.3555, -0.0186, -0.0653]
+  Path length: 0.7774
+
+Identity centroid:
+  Valid frames: 6/17
+  Start xyz: [-0.3489, 0.3199, 2.2851]
+  End   xyz: [0.1839, 0.3900, 2.1857]
+  Path length: 0.5710
+
+Saved trajectories to /sfs/gpfs/tardis/home/uft5by/FrameINO/preprocess/tmp/Turtle_opend4rt.npz

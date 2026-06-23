@@ -1,0 +1,25 @@
+Loading video: preprocess/media/running_bridge.mp4
+  Frames: 27, resolution: 1920x1080
+Segmenting frame-0 with OneFormer...
+[segment_model] Execution time: 4.3477 seconds
+  Sampled 8 query points (mask area ratio 0.137)
+Loading video: preprocess/media/scooter.mp4
+  Frames: 33, resolution: 1920x1080
+Segmenting frame-0 with OneFormer...
+[segment_model] Execution time: 0.5816 seconds
+  Sampled 8 query points (mask area ratio 0.225)
+Loading video: preprocess/media/track.mp4
+  Frames: 17, resolution: 1920x1080
+Segmenting frame-0 with OneFormer...
+[segment_model] Execution time: 0.5354 seconds
+  Sampled 8 query points (mask area ratio 0.182)
+Loading video: preprocess/media/Turtle.mp4
+  Frames: 17, resolution: 1920x1080
+Segmenting frame-0 with OneFormer...
+[segment_model] Execution time: 0.5131 seconds
+  Sampled 4 query points (mask area ratio 0.033)
+Loading video: preprocess/media/fight.mp4
+  Frames: 22, resolution: 1920x1080
+Segmenting frame-0 with OneFormer...
+[segment_model] Execution time: 0.5509 seconds
+  Sampled 4 query points (mask area ratio 0.052)

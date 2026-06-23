@@ -1,0 +1,20 @@
+Loading video: preprocess/media/scooter.mp4
+  Frames: 32, resolution: 1920x1080
+Loading D4RT model from /home/uft5by/FrameINO/preprocess/Open_d4rt/checkpoints/OpenD4RT_48CLIP_9Mix_NoCropAUG/opend4rt.ckpt
+Estimating camera trajectory (Umeyama extrinsics + intrinsics)...
+Loading video: preprocess/media/fight.mp4
+  Frames: 22, resolution: 1920x1080
+Loading D4RT model from /home/uft5by/FrameINO/preprocess/Open_d4rt/checkpoints/OpenD4RT_48CLIP_9Mix_NoCropAUG/opend4rt.ckpt
+Estimating camera trajectory (Umeyama extrinsics + intrinsics)...
+Loading video: preprocess/media/Turtle.mp4
+  Frames: 17, resolution: 1920x1080
+Loading D4RT model from /home/uft5by/FrameINO/preprocess/Open_d4rt/checkpoints/OpenD4RT_48CLIP_9Mix_NoCropAUG/opend4rt.ckpt
+Estimating camera trajectory (Umeyama extrinsics + intrinsics)...
+Loading video: preprocess/media/running_bridge.mp4
+  Frames: 27, resolution: 1920x1080
+Loading D4RT model from /home/uft5by/FrameINO/preprocess/Open_d4rt/checkpoints/OpenD4RT_48CLIP_9Mix_NoCropAUG/opend4rt.ckpt
+Estimating camera trajectory (Umeyama extrinsics + intrinsics)...
+Loading video: preprocess/media/track.mp4
+  Frames: 17, resolution: 1920x1080
+Loading D4RT model from /home/uft5by/FrameINO/preprocess/Open_d4rt/checkpoints/OpenD4RT_48CLIP_9Mix_NoCropAUG/opend4rt.ckpt
+Estimating camera trajectory (Umeyama extrinsics + intrinsics)...

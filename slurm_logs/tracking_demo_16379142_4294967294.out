@@ -1,0 +1,121 @@
+Loading video: preprocess/media/Turtle.mp4
+  Frames: 17, resolution: 1920x1080
+Loading SpaTrackV2 front-end from Yuxihenry/SpatialTrackerV2_Front
+Loading SpaTrackV2 tracker from Yuxihenry/SpatialTrackerV2-Offline
+Running VGGT4Track front-end (camera, depth)...
+  SpaTrack queries: 4 points at frame 0 (proc resolution 518x294)
+Running SpaTrackV2 Predictor (joint 3D tracking)...
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+No available kernel. Aborting execution.
+[spatracker 17] Execution time: 29.5986 seconds
+
+=== Trajectory summary (ref0 world frame, model-relative scale) ===
+Identity class: skateboard (4 query points)
+
+Camera:
+  Valid frames: 17/17
+  Start xyz: [0.0000, 0.0000, 0.0000]
+  End   xyz: [0.4308, 0.0850, -0.1901]
+  Path length: 1.8209
+
+Identity centroid:
+  Valid frames: 4/17
+  Start xyz: [-0.0975, 0.0908, 0.7645]
+  End   xyz: [-0.0320, 0.0678, 0.8567]
+  Path length: 0.3128
+
+Saved trajectories to /sfs/gpfs/tardis/home/uft5by/FrameINO/preprocess/tmp/Turtle_spatrack2.npz
