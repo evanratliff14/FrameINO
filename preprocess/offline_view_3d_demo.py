@@ -44,19 +44,21 @@ def load_video_frames(video_path: Path, sample_step: int = 10, max_frames: int |
 
     cap = cv2.VideoCapture(str(video_path))
     frames: list[np.ndarray] = []
+    i = 0
     while cap.isOpened():
         ret, frame = cap.read()
         if not ret:
             break
-        frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-        if max_frames is not None and len(frames) >= int(max_frames):
+        if i % sample_step ==0:
+            frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+        if max_frames is not None and len(frames) >= int(max_frames * sample_step):
             break
+        i+=1
     cap.release()
 
     if not frames:
         raise RuntimeError(f"Could not read any frames from {video_path}")
     frames = np.stack(frames, axis=0)
-    frames = frames[:: sample_step, :,:,:]
     return frames
 
 
