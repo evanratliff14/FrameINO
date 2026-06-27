@@ -2,6 +2,7 @@ from Open_d4rt.src.core import load_yaml_config
 from vis_motion import read_video_to_tensor, tensor_to_video_rgb, load_d4rt_model
 import argparse
 from pathlib import Path
+from vis_motion import timer
 
 from Open_d4rt.vis.build_like_demo import (
     _build_uv_grid,
@@ -43,19 +44,21 @@ if __name__ == "__main__":
     image_size = cfg.get_path("model.input.image_size", [h0, w0])
     video_model_rgb = _resize_video(video_rgb_np, image_hw=(int(image_size[0]), int(image_size[1])))
 
-    point_query_uv_px = _build_uv_grid(w0, h0, cols=64, rows=64, max_points=4096)
-    num_points = int(point_query_uv_px.shape[0])
-    point_query_uv_norm = point_query_uv_px.copy()
-    point_query_uv_norm[:, 0] /= float(max(w0 - 1, 1))
-    point_query_uv_norm[:, 1] /= float(max(h0 - 1, 1))
+    with timer("Building grid of query points"):
+        point_query_uv_px = _build_uv_grid(w0, h0, cols=64, rows=64, max_points=16384)
+        num_points = int(point_query_uv_px.shape[0])
+        point_query_uv_norm = point_query_uv_px.copy()
+        point_query_uv_norm[:, 0] /= float(max(w0 - 1, 1))
+        point_query_uv_norm[:, 1] /= float(max(h0 - 1, 1))
 
-    points_xyz_ref0, points_vis, points_conf, _ = _infer_point_cloud_ref0(
-        model=model,
-        video_model_rgb=video_model_rgb,
-        point_query_uv_norm=point_query_uv_norm,
-        query_chunk_size=args.query_chunk_size,
-        umeyama_slide_window=args.umeyama_slide_window,
-    )
+    with timer("Computing point cloud"):
+        points_xyz_ref0, points_vis, points_conf, _ = _infer_point_cloud_ref0(
+            model=model,
+            video_model_rgb=video_model_rgb,
+            point_query_uv_norm=point_query_uv_norm,
+            query_chunk_size=args.query_chunk_size,
+            umeyama_slide_window=args.umeyama_slide_window,
+        )
 
     suppress_depth_boundary_tracks = True
     depth_boundary_rel_thresh = 0.12
@@ -66,14 +69,15 @@ if __name__ == "__main__":
     points_rgb = _sample_rgb_from_uv_sequence(video_rgb=video_rgb_np, uv_px=points_uv_px)
     allowed_track_mask = np.ones((num_points,), dtype=bool)
     if bool(suppress_depth_boundary_tracks):
-        allowed_track_mask = _compute_non_boundary_candidate_mask(
-            query_uv_px=point_query_uv_px,
-            xyz_ref0_frame0=points_xyz_ref0[0],
-            visibility_frame0=points_vis[0],
-            rel_thresh=float(depth_boundary_rel_thresh),
-            abs_thresh=float(depth_boundary_abs_thresh),
-            dilate_radius=int(depth_boundary_dilate),
-        )
+        with timer("Computing the motion tracking mask"):
+            allowed_track_mask = _compute_non_boundary_candidate_mask(
+                query_uv_px=point_query_uv_px,
+                xyz_ref0_frame0=points_xyz_ref0[0],
+                visibility_frame0=points_vis[0],
+                rel_thresh=float(depth_boundary_rel_thresh),
+                abs_thresh=float(depth_boundary_abs_thresh),
+                dilate_radius=int(depth_boundary_dilate),
+            )
 
     point_motion_scores, point_visible_counts = _compute_point_motion_scores(
         xyz_ref0=points_xyz_ref0,
