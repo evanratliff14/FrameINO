@@ -249,39 +249,98 @@ def _depth_fallback_colors(xyz_ref0: np.ndarray) -> np.ndarray:
     return colors
 
 
+def _confidence_probability(conf: np.ndarray) -> np.ndarray:
+    """
+    Map stored confidence to a [0, 1] probability.
+
+    OpenD4RT dense exports store raw logits; SpaTrackV2 stores sigmoid outputs.
+    """
+    c = np.asarray(conf, dtype=np.float32)
+    out = np.zeros_like(c, dtype=np.float32)
+    finite = np.isfinite(c)
+    if not np.any(finite):
+        return out
+    cf = c[finite]
+    if float(np.max(cf)) > 1.0 or float(np.min(cf)) < 0.0:
+        out[finite] = 1.0 / (1.0 + np.exp(-cf))
+    else:
+        out[finite] = cf
+    return out
+
+
 def prepare_point_cloud_for_frame(
     bundle: PointCloudBundle,
     frame_idx: int,
     *,
     mode: Literal["3d", "4d"] = "4d",
-    show_background: bool = True,
+    show_static: bool = True,
+    show_dynamic: bool = False,
     point_budget: int = 30000,
-    dynamic_only: bool = False,
+    conf_threshold: float = 0.5,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Select visible dense-cloud points for one frame and map them into viewer space."""
-    t = 0 if mode == "3d" else int(np.clip(frame_idx, 0, max(bundle.num_frames - 1, 0)))
-    xyz_t = bundle.points_xyz_ref0[t]
-    vis_t = bundle.points_vis[t] if bundle.points_vis.ndim == 2 else bundle.points_vis
-    valid = np.isfinite(xyz_t).all(axis=-1) & vis_t
-    if bundle.allowed_track_mask is not None:
-        valid = valid & bundle.allowed_track_mask
-    if dynamic_only and bundle.point_is_dynamic is not None:
-        valid = valid & bundle.point_is_dynamic
-    elif not show_background and bundle.point_is_dynamic is not None:
-        valid = valid & bundle.point_is_dynamic
+    """
+    Select dense-cloud points and map them into viewer space.
 
-    idx = np.flatnonzero(valid)
-    if idx.size > int(point_budget):
-        idx = idx[_subsample_indices(idx.size, int(point_budget))]
+    3D mode unions visible points from every frame (full-scene reconstruction).
+    4D mode uses a single timeline frame.
 
-    if idx.size <= 0:
+    Static vs dynamic filtering uses ``point_is_dynamic`` when available:
+    - show_static=False masks out non-dynamic points
+    - show_dynamic=False masks out dynamic points (static scene only)
+
+    Points below ``conf_threshold`` (on a [0, 1] scale) are excluded.
+    """
+    if not show_static and not show_dynamic:
         return np.zeros((0, 3), dtype=np.float32), np.zeros((0, 3), dtype=np.uint8)
 
-    xyz_sel = xyz_t[idx]
-    if bundle.points_rgb is not None:
-        colors = bundle.points_rgb[t, idx].astype(np.uint8)
+    if mode == "3d":
+        frame_indices = range(bundle.num_frames)
     else:
-        colors = _depth_fallback_colors(xyz_sel)
+        frame_indices = [int(np.clip(frame_idx, 0, max(bundle.num_frames - 1, 0)))]
+
+    xyz_chunks: list[np.ndarray] = []
+    rgb_chunks: list[np.ndarray] = []
+
+    for t in frame_indices:
+        xyz_t = bundle.points_xyz_ref0[t]
+        vis_t = bundle.points_vis[t] if bundle.points_vis.ndim == 2 else bundle.points_vis
+        valid = np.isfinite(xyz_t).all(axis=-1) & vis_t
+        if bundle.allowed_track_mask is not None:
+            valid = valid & bundle.allowed_track_mask
+        if float(conf_threshold) > 0.0:
+            conf_prob = _confidence_probability(bundle.points_conf[t])
+            valid = valid & (conf_prob >= float(conf_threshold))
+
+        if bundle.point_is_dynamic is not None:
+            is_dyn = bundle.point_is_dynamic
+            keep = np.zeros_like(valid, dtype=bool)
+            if show_static:
+                keep |= valid & ~is_dyn
+            if show_dynamic:
+                keep |= valid & is_dyn
+            valid = keep
+        elif not show_static:
+            valid = np.zeros_like(valid, dtype=bool)
+
+        idx = np.flatnonzero(valid)
+        if idx.size <= 0:
+            continue
+        xyz_chunks.append(xyz_t[idx])
+        if bundle.points_rgb is not None:
+            rgb_chunks.append(bundle.points_rgb[t, idx].astype(np.uint8))
+        else:
+            rgb_chunks.append(_depth_fallback_colors(xyz_t[idx]))
+
+    if not xyz_chunks:
+        return np.zeros((0, 3), dtype=np.float32), np.zeros((0, 3), dtype=np.uint8)
+
+    xyz_sel = np.concatenate(xyz_chunks, axis=0)
+    colors = np.concatenate(rgb_chunks, axis=0)
+    if xyz_sel.shape[0] > int(point_budget):
+        pick = _subsample_indices(xyz_sel.shape[0], int(point_budget))
+        xyz_sel = xyz_sel[pick]
+        colors = colors[pick]
+
     return transform_points_for_viewer(xyz_sel), colors
 
 
@@ -533,6 +592,12 @@ def main() -> None:
     parser.add_argument("--sample_step", type=int, default=10, help="Video frame sampling step.")
     parser.add_argument("--point_cloud_npz", type=str, default=None, help="Optional dense point cloud NPZ.")
     parser.add_argument("--point_budget", type=int, default=30000, help="Max dense cloud points per frame.")
+    parser.add_argument(
+        "--conf_threshold",
+        type=float,
+        default=0.5,
+        help="Min dense-point confidence probability in [0, 1] (OpenD4RT logits are sigmoid-mapped).",
+    )
     args = parser.parse_args()
 
     print(f"Loading arrays from {args.npz_path}...")
@@ -655,6 +720,7 @@ def main() -> None:
     cloud_mode = None
     show_cloud_background = None
     cloud_size_slider = None
+    conf_threshold_slider = None
     if point_cloud_bundle is not None:
         with server.gui.add_folder("Dense point cloud", expand_by_default=True):
             show_dense_cloud = server.gui.add_checkbox("Show dense point cloud", initial_value=True)
@@ -664,6 +730,13 @@ def main() -> None:
                 initial_value="4D",
             )
             show_cloud_background = server.gui.add_checkbox("Show background points", initial_value=True)
+            conf_threshold_slider = server.gui.add_slider(
+                "Confidence threshold",
+                min=0.0,
+                max=1.0,
+                step=0.05,
+                initial_value=float(args.conf_threshold),
+            )
             cloud_size_slider = server.gui.add_slider("Cloud point size", min=0.2, max=3.0, step=0.1, initial_value=1.0)
 
     frame_image = server.gui.add_image(video_rgb[0], label="rgb_frame")
@@ -750,13 +823,19 @@ def main() -> None:
             return
 
         mode = _cloud_mode_value()
+        show_static = bool(show_cloud_background.value) if show_cloud_background is not None else True
+        show_dynamic = bool(show_dense_motion_points.value)
+        conf_threshold = (
+            float(conf_threshold_slider.value) if conf_threshold_slider is not None else float(args.conf_threshold)
+        )
         pts, cols = prepare_point_cloud_for_frame(
             point_cloud_bundle,
             t,
             mode=mode,
-            show_background=bool(show_cloud_background.value) if show_cloud_background is not None else True,
+            show_static=show_static,
+            show_dynamic=show_dynamic,
             point_budget=int(args.point_budget),
-            dynamic_only=False,
+            conf_threshold=conf_threshold,
         )
         if pts.shape[0] <= 0:
             clear_static_cloud()
@@ -766,7 +845,9 @@ def main() -> None:
         if mode == "3d":
             signature = (
                 mode,
-                bool(show_cloud_background.value) if show_cloud_background is not None else True,
+                show_static,
+                show_dynamic,
+                round(conf_threshold, 3),
                 int(args.point_budget),
                 round(size_scale, 3),
                 int(pts.shape[0]),
@@ -861,28 +942,6 @@ def main() -> None:
                         )
                     )
 
-            if bool(show_dense_motion_points.value) and point_cloud_bundle is not None:
-                motion_pts, motion_cols = prepare_point_cloud_for_frame(
-                    point_cloud_bundle,
-                    t,
-                    mode="4d",
-                    show_background=False,
-                    point_budget=int(args.point_budget),
-                    dynamic_only=True,
-                )
-                if motion_pts.shape[0] > 0:
-                    add_dynamic(
-                        add_point_cloud_to_viser_scene(
-                            server.scene,
-                            "/current/dense_motion_points",
-                            motion_pts,
-                            motion_cols,
-                            scene_radius=radius,
-                            point_size_scale=2.0,
-                            point_shape="sparkle",
-                        )
-                    )
-
             _render_dense_cloud(t)
 
             if bool(show_frustum.value) and np.isfinite(t_ref0_cam[t]).all():
@@ -924,6 +983,8 @@ def main() -> None:
         show_cloud_background.on_update(lambda _: render())
     if cloud_size_slider is not None:
         cloud_size_slider.on_update(lambda _: render())
+    if conf_threshold_slider is not None:
+        conf_threshold_slider.on_update(lambda _: render())
 
     render()
     sync_all_clients_to_frame_camera(0)
