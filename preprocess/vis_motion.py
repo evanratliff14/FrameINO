@@ -9,6 +9,7 @@ For a single input video, estimates:
 Backends (--model):
   - opend4rt: OpenD4RT camera branches + 3D track head
   - spatrackerv2: SpaTrackV2 VGGT4Track front-end + Predictor joint tracking
+  - vipe: ViPE SLAM camera poses only (no identity tracking, no depth in trajectory NPZ)
 
 Coordinate convention (ref0_opencv_t0_identity):
   - ref0 is the world frame anchored at frame 0.
@@ -21,8 +22,14 @@ Export NPZ with --output_npz, then view locally via offline_view_3d_demo.py.
 python preprocess/3d_visualize.py --model opend4rt --video_path preprocess/1917.mp4
   --ckpt_path preprocess/Open_d4rt/checkpoints/.../opend4rt.ckpt --output_npz tmp/trajectories.npz
 
-python preprocess/3d_visualize.py --model spatrackerv2 --video_path preprocess/media/1917.mp4
+python preprocess/vis_motion.py --model spatrackerv2 --video_path preprocess/media/1917.mp4
   --output_npz preprocess/tmp/spatrack_trajectories.npz
+
+python preprocess/vis_motion.py --model vipe --video_path preprocess/media/1917.mp4
+  --output_npz preprocess/tmp/vipe_trajectories.npz
+
+ViPE setup (vendored preprocess/vipe submodule):
+  cd preprocess/vipe && uv sync  (see preprocess/vipe/docs/installation.md)
 
 """
 
@@ -57,6 +64,7 @@ PREPROCESS_ROOT = Path(__file__).resolve().parent
 REPO_ROOT = PREPROCESS_ROOT.parent
 OPEN_D4RT_ROOT = PREPROCESS_ROOT / "Open_d4rt"
 SPATRACKER_ROOT = PREPROCESS_ROOT / "SpaTrackerV2"
+VIPE_ROOT = PREPROCESS_ROOT / "vipe"
 
 MOTIONABLE_OBJECT = [
                         'person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train', 'truck', 'boat',
@@ -718,6 +726,250 @@ def run_spatrackerv2_backend(
     )
 
 
+# =============================================================================
+# Backend: ViPE
+# =============================================================================
+
+_VIPE_PATH_INSTALLED = False
+
+
+def _ensure_vipe_path() -> None:
+    """Add preprocess/vipe to sys.path for the vendored ViPE package."""
+    global _VIPE_PATH_INSTALLED
+    if _VIPE_PATH_INSTALLED:
+        return
+    root = str(VIPE_ROOT)
+    if root not in sys.path:
+        sys.path.insert(0, root)
+    _VIPE_PATH_INSTALLED = True
+
+
+def _vipe_seek_range(num_frames: int, sample_step: int) -> range:
+    """Frame indices matching read_video_to_tensor() subsampling."""
+    step = max(1, int(sample_step))
+    n = max(1, int(num_frames))
+    return range(0, n * step, step)
+
+
+def _intrinsics_vec_to_k(fx: float, fy: float, cx: float, cy: float) -> np.ndarray:
+    """Build a 3x3 pinhole intrinsics matrix from [fx, fy, cx, cy]."""
+    return np.array(
+        [[float(fx), 0.0, float(cx)], [0.0, float(fy), float(cy)], [0.0, 0.0, 1.0]],
+        dtype=np.float32,
+    )
+
+
+def _vipe_hydra_overrides(pipeline: str) -> list[str]:
+    return [
+        f"pipeline={pipeline}",
+        "init.instance=null",
+        "pipeline.output.save_viz=false",
+        "pipeline.output.save_artifacts=false",
+    ]
+
+
+def _run_vipe_pipeline(
+    video_path: str | Path,
+    *,
+    num_frames: int,
+    sample_step: int,
+    need_depth: bool,
+    pipeline: str = "default",
+) -> Any:
+    """
+    Run ViPE on a subsampled MP4 stream.
+
+    Returns SLAMOutput when need_depth=False, else a list of VideoFrame with
+    pose, intrinsics, and metric_depth populated.
+    """
+    _ensure_vipe_path()
+    from vipe.config import parse_typed_config
+    from vipe.pipeline import make_pipeline
+    from vipe.streams.base import ProcessedVideoStream
+    from vipe.streams.raw_mp4_stream import RawMp4Stream
+
+    path = Path(video_path)
+    seek = _vipe_seek_range(num_frames, sample_step)
+    video_stream = ProcessedVideoStream(
+        RawMp4Stream(path, seek_range=seek),
+        [],
+    ).cache(desc="Reading video stream")
+
+    config = parse_typed_config("default", hydra_args=_vipe_hydra_overrides(pipeline))
+    vipe_pipeline = make_pipeline(config.pipeline)
+    if need_depth:
+        vipe_pipeline.return_output_streams = True
+    else:
+        vipe_pipeline.return_payload = True
+
+    output = vipe_pipeline.run(video_stream)
+    if need_depth:
+        if not output.output_streams:
+            raise RuntimeError("ViPE did not return output streams.")
+        return list(output.output_streams[0])
+    if output.payload is None:
+        raise RuntimeError("ViPE SLAM did not return a payload.")
+    return output.payload
+
+
+def _slam_output_to_ref0(slam_output: Any) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Convert ViPE SLAMOutput to ref0-normalized c2w poses and per-frame K."""
+    c2w = slam_output.get_view_trajectory(0).matrix().detach().cpu().numpy().astype(np.float64)
+    t_ref0_cam = normalize_c2w_to_ref0(c2w)
+    camera_xyz_world = t_ref0_cam[:, :3, 3].copy().astype(np.float32)
+
+    intr = slam_output.intrinsics[0].detach().cpu().numpy().astype(np.float64)
+    fx, fy, cx, cy = intr[:4]
+    k = _intrinsics_vec_to_k(fx, fy, cx, cy)
+    k_seq = np.tile(k[None, :, :], (t_ref0_cam.shape[0], 1, 1))
+    return t_ref0_cam.astype(np.float32), k_seq, camera_xyz_world
+
+
+def _empty_tracking_result(num_frames: int) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Placeholder identity/track arrays for camera-only ViPE exports."""
+    identity_xyz_world = np.full((num_frames, 3), np.nan, dtype=np.float32)
+    tracks_xyz_ref0 = np.zeros((0, num_frames, 3), dtype=np.float32)
+    tracks_visibility = np.zeros((0, num_frames), dtype=bool)
+    identity_uv_px = np.zeros((0, 2), dtype=np.float32)
+    return identity_xyz_world, tracks_xyz_ref0, tracks_visibility, identity_uv_px
+
+
+def run_vipe_backend(
+    *,
+    video_path: str | Path,
+    num_frames: int,
+    sample_step: int,
+    pipeline: str = "default",
+) -> TrajectoryResult:
+    """Run ViPE SLAM only; return NPZ-ready camera trajectory without tracking."""
+    print(f"Running ViPE SLAM (pipeline={pipeline})...")
+    slam_output = _run_vipe_pipeline(
+        video_path,
+        num_frames=num_frames,
+        sample_step=sample_step,
+        need_depth=False,
+        pipeline=pipeline,
+    )
+    t_ref0_cam, k_seq, camera_xyz_world = _slam_output_to_ref0(slam_output)
+    num_out_frames = int(t_ref0_cam.shape[0])
+    identity_xyz_world, tracks_xyz_ref0, tracks_visibility, identity_uv_px = _empty_tracking_result(num_out_frames)
+    return TrajectoryResult(
+        camera_xyz_world=camera_xyz_world,
+        identity_xyz_world=identity_xyz_world,
+        T_ref0_cam=t_ref0_cam,
+        K=k_seq,
+        tracks_xyz_ref0=tracks_xyz_ref0,
+        tracks_visibility=tracks_visibility,
+        identity_uv_px=identity_uv_px,
+    )
+
+
+def _sample_depth_bilinear(depth: np.ndarray, uv_px: np.ndarray) -> np.ndarray:
+    """Sample depth [H,W] at pixel UV [Q,2] via bilinear interpolation."""
+    depth_arr = np.asarray(depth, dtype=np.float64)
+    uv = np.asarray(uv_px, dtype=np.float64)
+    h, w = depth_arr.shape
+    u = np.clip(uv[:, 0], 0.0, float(max(w - 1, 0)))
+    v = np.clip(uv[:, 1], 0.0, float(max(h - 1, 0)))
+    u0 = np.floor(u).astype(np.int64)
+    v0 = np.floor(v).astype(np.int64)
+    u1 = np.minimum(u0 + 1, w - 1)
+    v1 = np.minimum(v0 + 1, h - 1)
+    du = u - u0
+    dv = v - v0
+    d00 = depth_arr[v0, u0]
+    d01 = depth_arr[v0, u1]
+    d10 = depth_arr[v1, u0]
+    d11 = depth_arr[v1, u1]
+    d0 = d00 * (1.0 - du) + d01 * du
+    d1 = d10 * (1.0 - du) + d11 * du
+    return (d0 * (1.0 - dv) + d1 * dv).astype(np.float32)
+
+
+def _unproject_uv_depth(
+    uv_px: np.ndarray,
+    depth_vals: np.ndarray,
+    k: np.ndarray,
+) -> np.ndarray:
+    """Unproject pixel UV + depth to camera-space XYZ (OpenCV, z forward)."""
+    uv = np.asarray(uv_px, dtype=np.float64)
+    d = np.asarray(depth_vals, dtype=np.float64)
+    fx, fy, cx, cy = k[0, 0], k[1, 1], k[0, 2], k[1, 2]
+    x = (uv[:, 0] - cx) / max(fx, 1e-8) * d
+    y = (uv[:, 1] - cy) / max(fy, 1e-8) * d
+    return np.stack([x, y, d], axis=-1).astype(np.float32)
+
+
+def infer_dense_point_cloud_vipe(
+    *,
+    video_path: str | Path,
+    point_query_uv_px: np.ndarray,
+    num_frames: int,
+    sample_step: int,
+    pipeline: str = "no_vda",
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Build a dense ref0 point cloud by unprojecting ViPE metric depth at fixed UV seeds.
+    """
+    _ensure_vipe_path()
+    from vipe.utils.depth import reliable_depth_mask_range
+
+    frames = _run_vipe_pipeline(
+        video_path,
+        num_frames=num_frames,
+        sample_step=sample_step,
+        need_depth=True,
+        pipeline=pipeline,
+    )
+    num_out_frames = len(frames)
+    if num_out_frames == 0:
+        raise RuntimeError("ViPE returned no frames.")
+
+    point_query_uv_px = np.asarray(point_query_uv_px, dtype=np.float32)
+    num_points = int(point_query_uv_px.shape[0])
+    points_xyz_ref0 = np.full((num_out_frames, num_points, 3), np.nan, dtype=np.float32)
+    points_vis = np.zeros((num_out_frames, num_points), dtype=bool)
+    points_conf = np.full((num_out_frames, num_points), np.nan, dtype=np.float32)
+
+    c2w_list: list[np.ndarray] = []
+    for frame in frames:
+        if frame.pose is None:
+            raise RuntimeError("ViPE frame missing pose.")
+        c2w_list.append(frame.pose.matrix().detach().cpu().numpy())
+    t_ref0_cam = normalize_c2w_to_ref0(np.stack(c2w_list, axis=0))
+
+    print(
+        f"Unprojecting ViPE depth for {num_points} grid queries "
+        f"over {num_out_frames} frames (pipeline={pipeline})..."
+    )
+    for t, frame in enumerate(frames):
+        if frame.metric_depth is None or frame.intrinsics is None:
+            continue
+        depth = frame.metric_depth.detach().cpu().numpy()
+        intr = frame.intrinsics.detach().cpu().numpy()
+        k = _intrinsics_vec_to_k(float(intr[0]), float(intr[1]), float(intr[2]), float(intr[3]))
+        depth_vals = _sample_depth_bilinear(depth, point_query_uv_px)
+        reliable = reliable_depth_mask_range(frame.metric_depth).detach().cpu().numpy()
+        reliable_vals = _sample_depth_bilinear(reliable.astype(np.float32), point_query_uv_px) > 0.5
+
+        xyz_cam = _unproject_uv_depth(point_query_uv_px, depth_vals, k)
+        rot = t_ref0_cam[t, :3, :3].astype(np.float64)
+        trans = t_ref0_cam[t, :3, 3].astype(np.float64)
+        xyz_ref0 = (xyz_cam @ rot.T) + trans[None, :]
+
+        valid = (
+            reliable_vals
+            & np.isfinite(depth_vals)
+            & (depth_vals > 1e-4)
+            & np.isfinite(xyz_ref0).all(axis=-1)
+        )
+        points_xyz_ref0[t, valid, :] = xyz_ref0[valid]
+        points_vis[t, valid] = True
+        points_conf[t, valid] = 1.0
+
+    return points_xyz_ref0, points_vis, points_conf
+
+
 def _path_length(xyz: np.ndarray) -> float:
     """Sum of Euclidean step lengths along a [T, 3] trajectory (skipping NaN gaps)."""
     pts = np.asarray(xyz, dtype=np.float64)
@@ -737,13 +989,19 @@ def print_trajectory_summary(
     camera_xyz: np.ndarray,
     identity_xyz: np.ndarray,
     *,
-    identity_meta: dict[str, Any],
+    identity_meta: dict[str, Any] | None = None,
 ) -> None:
     """Print a concise summary for stdout output."""
     print("\n=== Trajectory summary (ref0 world frame, model-relative scale) ===")
-    print(f"Identity class: {identity_meta.get('class_name', '?')} "
-          f"({identity_meta.get('num_queries', '?')} query points)")
-    for name, traj in (("Camera", camera_xyz), ("Identity centroid", identity_xyz)):
+    if identity_meta is not None:
+        print(
+            f"Identity class: {identity_meta.get('class_name', '?')} "
+            f"({identity_meta.get('num_queries', '?')} query points)"
+        )
+    trajectories = [("Camera", camera_xyz)]
+    if identity_meta is not None:
+        trajectories.append(("Identity centroid", identity_xyz))
+    for name, traj in trajectories:
         valid = np.isfinite(traj).all(axis=-1)
         n_valid = int(np.count_nonzero(valid))
         print(f"\n{name}:")
@@ -799,7 +1057,7 @@ def save_trajectories_npz(
 def parse_args() -> argparse.Namespace:
     default_config = PREPROCESS_ROOT / "Open_d4rt" / "configs" / "model_effective.yaml"
     parser = argparse.ArgumentParser(
-        description="3D camera + identity centroid trajectory demo (OpenD4RT or SpaTrackV2 + OneFormer)."
+        description="3D camera + identity centroid trajectory demo (OpenD4RT, SpaTrackV2, or ViPE)."
     )
     parser.add_argument("--video_path", type=str, required=True, help="Input video path.")
     parser.add_argument("--segment", action='store_true', help="Whether to create or overwrite existing segment JSON. Evaluates to true if typed, false if not.")
@@ -807,8 +1065,8 @@ def parse_args() -> argparse.Namespace:
         "--model",
         type=str,
         default="opend4rt",
-        choices=("opend4rt", "spatrackerv2"),
-        help="Trajectory backend: opend4rt or spatrackerv2.",
+        choices=("opend4rt", "spatrackerv2", "vipe"),
+        help="Trajectory backend: opend4rt, spatrackerv2, or vipe.",
     )
     parser.add_argument("--config", type=str, default=str(default_config), help="D4RT model config yaml.")
     parser.add_argument("--ckpt_path", type=str, default=None, help="D4RT checkpoint path (required for opend4rt).")
@@ -823,6 +1081,12 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default="Yuxihenry/SpatialTrackerV2-Offline",
         help="SpaTrackV2 Predictor checkpoint (HF id or local path).",
+    )
+    parser.add_argument(
+        "--vipe_pipeline",
+        type=str,
+        default="default",
+        help="ViPE Hydra pipeline preset (default for camera-only SLAM).",
     )
     parser.add_argument("--num_frames", type=int, default=64, help="Max frames to process.")
     parser.add_argument("--device", type=str, default="auto", choices=("auto", "cuda", "cpu"))
@@ -850,10 +1114,33 @@ def main() -> int:
 
     if args.model == "opend4rt" and not args.ckpt_path:
         raise ValueError("--ckpt_path is required when --model opend4rt")
+    if args.model == "vipe" and args.segment:
+        raise ValueError("--segment is not used with --model vipe (no identity tracking).")
 
     video_path = Path(args.video_path)
     if not video_path.exists():
         raise FileNotFoundError(video_path)
+
+    if args.model == "vipe":
+        print(f"Processing video with ViPE: {video_path}")
+        probe = read_video_to_tensor(video_path, sample_step=1, max_frames=1)
+        height, width = int(probe.shape[2]), int(probe.shape[3])
+        with timer(f"vipe {args.num_frames}"):
+            result = run_vipe_backend(
+                video_path=video_path,
+                num_frames=int(args.num_frames),
+                sample_step=int(args.sample_step),
+                pipeline=str(args.vipe_pipeline),
+            )
+        num_frames = int(result.camera_xyz_world.shape[0])
+        print(f"  Frames: {num_frames}, resolution: {width}x{height}")
+        print_trajectory_summary(result.camera_xyz_world, result.identity_xyz_world)
+        if args.output_npz:
+            save_trajectories_npz(
+                args.output_npz,
+                **result.to_npz_kwargs(video_height=height, video_width=width),
+            )
+        return 0
 
     print(f"Loading video: {video_path}")
     video_tensor = read_video_to_tensor(video_path, sample_step=args.sample_step, max_frames=int(args.num_frames))
@@ -913,7 +1200,7 @@ def main() -> int:
                 query_chunk_size=int(args.query_chunk_size),
                 umeyama_slide_window=bool(args.umeyama_slide_window),
             )
-    else:
+    elif args.model == "spatrackerv2":
         with timer(f"spatracker {num_frames}"):
             result = run_spatrackerv2_backend(
                 device=device,
@@ -923,6 +1210,8 @@ def main() -> int:
                 front_ckpt=args.spatrack_front_ckpt,
                 tracker_ckpt=args.spatrack_tracker_ckpt,
             )
+    else:
+        raise ValueError(f"Unsupported model backend: {args.model}")
 
     print_trajectory_summary(
         result.camera_xyz_world,
