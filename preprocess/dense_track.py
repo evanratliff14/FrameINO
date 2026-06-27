@@ -1,4 +1,4 @@
-from preprocess.Open_d4rt.src.core import load_yaml_config
+from Open_d4rt.src.core import load_yaml_config
 from vis_motion import read_video_to_tensor, tensor_to_video_rgb, load_d4rt_model
 import argparse
 from pathlib import Path
@@ -98,7 +98,7 @@ if __name__ == "__main__":
     else:
         raise RuntimeError("No valid points!")
 
-    output_path = Path(args.output_npz) if args.output_npz else Path("tmp") / f"{path.stem}_point_cloud.npz"
+    output_path = Path(args.output_npz) if args.output_npz else Path.cwd() / Path("tmp") / f"{path.stem}_point_cloud.npz"
     output_path.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(
         output_path,

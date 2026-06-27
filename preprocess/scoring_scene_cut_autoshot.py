@@ -88,23 +88,6 @@ def get_clean_shots(model, device, frames: np.ndarray) -> list:
 
     return ranges
 
-def get_default(model, device, frames: np.ndarray) -> list:
-    """" 
-    Run the model on videos and return the durations that contain clean shots
-    Note that we do not use get_batches because Omnishot natively returns ranges
-    """
-    ranges, intra_labels, inter_labels = model.inference(torch.tensor(frames), mode="default")
-
-    if len(ranges) == 0:
-        print("No clean shot ranges detected for video")
-        return [0,0]
-
-    # print(ranges, intra_labels, inter_labels)
-    return ranges, intra_labels, inter_labels
-
-
-
-
 @torch.no_grad
 def single_process(csv_folder_path, store_folder_path, GPU_offset):
 
@@ -199,7 +182,7 @@ def single_process(csv_folder_path, store_folder_path, GPU_offset):
 
 
                 # Predict the Number of Scene Cut
-                ranges, _, _ = get_default(model, device, video_np)
+                ranges = get_clean_shots(model, device, video_np)
 
                 # # Convert to range in scenes
                 # scenes = []
