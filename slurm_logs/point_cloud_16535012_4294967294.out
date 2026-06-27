@@ -1,0 +1,4 @@
+[Building grid of query points] Execution time: 0.0041 seconds
+[Computing point cloud] Execution time: 243.5240 seconds
+[Computing the motion tracking mask] Execution time: 0.0010 seconds
+Saved point cloud to /sfs/gpfs/tardis/home/uft5by/FrameINO/tmp/fight_point_cloud.npz

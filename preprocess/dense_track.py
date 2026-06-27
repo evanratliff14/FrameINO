@@ -45,7 +45,7 @@ if __name__ == "__main__":
     video_model_rgb = _resize_video(video_rgb_np, image_hw=(int(image_size[0]), int(image_size[1])))
 
     with timer("Building grid of query points"):
-        point_query_uv_px = _build_uv_grid(w0, h0, cols=64, rows=64, max_points=16384)
+        point_query_uv_px = _build_uv_grid(w0, h0, cols=h0, rows=w0, max_points=16384)
         num_points = int(point_query_uv_px.shape[0])
         point_query_uv_norm = point_query_uv_px.copy()
         point_query_uv_norm[:, 0] /= float(max(w0 - 1, 1))
