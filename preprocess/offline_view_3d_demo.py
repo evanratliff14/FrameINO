@@ -13,8 +13,9 @@ import argparse
 import math
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import cv2
 import numpy as np
@@ -86,6 +87,225 @@ def transform_pose_for_viewer(t_ref0_cam: np.ndarray) -> np.ndarray:
     out[:3, :3] = R_OPENCV_TO_VIEWER @ r
     out[:3, 3] = R_OPENCV_TO_VIEWER @ t
     return out.astype(np.float32)
+
+
+# =============================================================================
+# Dense point cloud (load + Viser scene helpers)
+# =============================================================================
+
+
+@dataclass
+class PointCloudBundle:
+    points_xyz_ref0: np.ndarray
+    points_vis: np.ndarray
+    points_conf: np.ndarray
+    points_rgb: np.ndarray | None
+    allowed_track_mask: np.ndarray | None
+    point_is_dynamic: np.ndarray | None
+    xyz_center: np.ndarray
+    xyz_radius: float
+    coordinate_convention: str
+    num_frames: int
+
+
+def _subsample_indices(total: int, keep: int) -> np.ndarray:
+    keep = max(0, min(int(keep), int(total)))
+    if keep <= 0:
+        return np.zeros((0,), dtype=np.int64)
+    if keep >= total:
+        return np.arange(total, dtype=np.int64)
+    return np.linspace(0, total - 1, num=keep, dtype=np.int64)
+
+
+def _ensure_time_series(arr: np.ndarray, *, name: str) -> np.ndarray:
+    data = np.asarray(arr)
+    if data.ndim == 2:
+        return data[None, ...]
+    if data.ndim != 3:
+        raise ValueError(f"{name} must have shape [T,N,C] or [N,C], got {data.shape}")
+    return data
+
+
+def _resolve_point_cloud_path(path: Path) -> Path:
+    """Resolve legacy np.save outputs that append `.npy` to the requested filename."""
+    if path.exists():
+        return path
+    npy_variant = Path(f"{path}.npy")
+    if npy_variant.exists():
+        return npy_variant
+    return path
+
+
+def load_point_cloud_npz(path: Path) -> PointCloudBundle:
+    """Load a dense point cloud NPZ exported by dense_track.py (or legacy dict saves)."""
+    path = _resolve_point_cloud_path(Path(path))
+    if not path.exists():
+        raise FileNotFoundError(f"Point cloud NPZ not found at: {path}")
+
+    points_xyz_ref0: np.ndarray | None = None
+    points_vis: np.ndarray | None = None
+    points_conf: np.ndarray | None = None
+    points_rgb: np.ndarray | None = None
+    allowed_track_mask: np.ndarray | None = None
+    point_is_dynamic: np.ndarray | None = None
+    xyz_center = np.zeros((3,), dtype=np.float32)
+    xyz_radius = 1.0
+    coordinate_convention = "opencv_ref0"
+
+    data = np.load(path, allow_pickle=True)
+    try:
+        if isinstance(data, np.lib.npyio.NpzFile) and "points_xyz_ref0" in data.files:
+            points_xyz_ref0 = np.asarray(data["points_xyz_ref0"], dtype=np.float32)
+            points_vis = np.asarray(data["points_vis"], dtype=bool)
+            points_conf = np.asarray(data["points_conf"], dtype=np.float32)
+            points_rgb = (
+                np.asarray(data["points_rgb"], dtype=np.uint8) if "points_rgb" in data.files else None
+            )
+            allowed_track_mask = (
+                np.asarray(data["allowed_track_mask"], dtype=bool)
+                if "allowed_track_mask" in data.files
+                else None
+            )
+            point_is_dynamic = (
+                np.asarray(data["point_is_dynamic"], dtype=bool)
+                if "point_is_dynamic" in data.files
+                else None
+            )
+            if "xyz_center" in data.files:
+                xyz_center = np.asarray(data["xyz_center"], dtype=np.float32)
+            if "xyz_radius" in data.files:
+                xyz_radius = float(np.asarray(data["xyz_radius"]).reshape(-1)[0])
+            if "coordinate_convention" in data.files:
+                coordinate_convention = str(np.asarray(data["coordinate_convention"]).item())
+        elif int(getattr(data, "ndim", -1)) == 0:
+            payload = data.item()
+            if not isinstance(payload, dict):
+                raise ValueError(f"Legacy point cloud payload in {path} is not a dict")
+            points_xyz_ref0 = np.asarray(payload["points_xyz_ref0"], dtype=np.float32)
+            points_vis = np.asarray(payload["points_vis"], dtype=bool)
+            points_conf = np.asarray(payload["points_conf"], dtype=np.float32)
+            points_rgb = np.asarray(payload["points_rgb"], dtype=np.uint8) if "points_rgb" in payload else None
+            allowed_track_mask = (
+                np.asarray(payload["allowed_track_mask"], dtype=bool)
+                if "allowed_track_mask" in payload
+                else None
+            )
+            point_is_dynamic = (
+                np.asarray(payload["point_is_dynamic"], dtype=bool)
+                if "point_is_dynamic" in payload
+                else None
+            )
+            xyz_center = np.asarray(payload.get("xyz_center", xyz_center), dtype=np.float32)
+            xyz_radius = float(payload.get("xyz_radius", xyz_radius))
+            coordinate_convention = str(payload.get("coordinate_convention", coordinate_convention))
+        else:
+            raise ValueError(f"Unrecognized point cloud format in {path}")
+    finally:
+        if hasattr(data, "close"):
+            data.close()
+
+    if points_xyz_ref0 is None or points_vis is None or points_conf is None:
+        raise ValueError(f"Point cloud file {path} is missing required arrays")
+
+    points_xyz_ref0 = _ensure_time_series(points_xyz_ref0, name="points_xyz_ref0")
+    if points_vis.ndim == 1:
+        points_vis = np.tile(points_vis[None, :], (points_xyz_ref0.shape[0], 1))
+    points_vis = np.asarray(points_vis, dtype=bool)
+    if points_conf.ndim == 1:
+        points_conf = np.tile(points_conf[None, :], (points_xyz_ref0.shape[0], 1))
+    if points_rgb is not None:
+        points_rgb = _ensure_time_series(points_rgb, name="points_rgb")
+    if point_is_dynamic is not None and point_is_dynamic.ndim == 2:
+        point_is_dynamic = point_is_dynamic.any(axis=0)
+
+    return PointCloudBundle(
+        points_xyz_ref0=points_xyz_ref0,
+        points_vis=points_vis,
+        points_conf=np.asarray(points_conf, dtype=np.float32),
+        points_rgb=points_rgb,
+        allowed_track_mask=allowed_track_mask,
+        point_is_dynamic=point_is_dynamic,
+        xyz_center=np.asarray(xyz_center, dtype=np.float32).reshape(3),
+        xyz_radius=float(xyz_radius),
+        coordinate_convention=coordinate_convention,
+        num_frames=int(points_xyz_ref0.shape[0]),
+    )
+
+
+def _depth_fallback_colors(xyz_ref0: np.ndarray) -> np.ndarray:
+    z = xyz_ref0[:, 2]
+    valid = np.isfinite(z)
+    if not np.any(valid):
+        return np.full((xyz_ref0.shape[0], 3), 180, dtype=np.uint8)
+    z_valid = z[valid]
+    z_min, z_max = float(z_valid.min()), float(z_valid.max())
+    denom = max(z_max - z_min, 1e-6)
+    colors = np.full((xyz_ref0.shape[0], 3), 180, dtype=np.uint8)
+    for i in np.flatnonzero(valid):
+        t = float(np.clip((z[i] - z_min) / denom, 0.0, 1.0))
+        idx = int(round(t * 255.0))
+        bgr = cv2.applyColorMap(np.array([[idx]], dtype=np.uint8), cv2.COLORMAP_TURBO)[0, 0]
+        colors[i] = (int(bgr[2]), int(bgr[1]), int(bgr[0]))
+    return colors
+
+
+def prepare_point_cloud_for_frame(
+    bundle: PointCloudBundle,
+    frame_idx: int,
+    *,
+    mode: Literal["3d", "4d"] = "4d",
+    show_background: bool = True,
+    point_budget: int = 30000,
+    dynamic_only: bool = False,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Select visible dense-cloud points for one frame and map them into viewer space."""
+    t = 0 if mode == "3d" else int(np.clip(frame_idx, 0, max(bundle.num_frames - 1, 0)))
+    xyz_t = bundle.points_xyz_ref0[t]
+    vis_t = bundle.points_vis[t] if bundle.points_vis.ndim == 2 else bundle.points_vis
+    valid = np.isfinite(xyz_t).all(axis=-1) & vis_t
+    if bundle.allowed_track_mask is not None:
+        valid = valid & bundle.allowed_track_mask
+    if dynamic_only and bundle.point_is_dynamic is not None:
+        valid = valid & bundle.point_is_dynamic
+    elif not show_background and bundle.point_is_dynamic is not None:
+        valid = valid & bundle.point_is_dynamic
+
+    idx = np.flatnonzero(valid)
+    if idx.size > int(point_budget):
+        idx = idx[_subsample_indices(idx.size, int(point_budget))]
+
+    if idx.size <= 0:
+        return np.zeros((0, 3), dtype=np.float32), np.zeros((0, 3), dtype=np.uint8)
+
+    xyz_sel = xyz_t[idx]
+    if bundle.points_rgb is not None:
+        colors = bundle.points_rgb[t, idx].astype(np.uint8)
+    else:
+        colors = _depth_fallback_colors(xyz_sel)
+    return transform_points_for_viewer(xyz_sel), colors
+
+
+def add_point_cloud_to_viser_scene(
+    scene: Any,
+    name: str,
+    points: np.ndarray,
+    colors: np.ndarray,
+    *,
+    scene_radius: float = 1.0,
+    point_size_scale: float = 1.0,
+    point_shape: str = "circle",
+) -> Any:
+    """Add a colored point cloud to any Viser scene graph node."""
+    if int(points.shape[0]) <= 0:
+        return None
+    return scene.add_point_cloud(
+        name,
+        points=np.asarray(points, dtype=np.float32),
+        colors=np.asarray(colors, dtype=np.uint8),
+        point_size=max(float(scene_radius) * 0.0035 * float(point_size_scale), 0.003),
+        point_shape=point_shape,
+        precision="float32",
+    )
 
 
 # =============================================================================
@@ -310,7 +530,9 @@ def main() -> None:
     parser.add_argument("--npz_path", type=str, required=True, help="Path to trajectories.npz")
     parser.add_argument("--video_path", type=str, required=True, help="Path to local copy of video.")
     parser.add_argument("--port", type=int, default=8080, help="Local port for Viser.")
-    parser.add_argument("--sample_step", type=int, default=10, help="Local port for Viser.")
+    parser.add_argument("--sample_step", type=int, default=10, help="Video frame sampling step.")
+    parser.add_argument("--point_cloud_npz", type=str, default=None, help="Optional dense point cloud NPZ.")
+    parser.add_argument("--point_budget", type=int, default=30000, help="Max dense cloud points per frame.")
     args = parser.parse_args()
 
     print(f"Loading arrays from {args.npz_path}...")
@@ -328,11 +550,38 @@ def main() -> None:
         conv = str(np.asarray(data["coordinate_convention"]).item())
         print(f"NPZ coordinate convention: {conv}")
 
+    point_cloud_bundle: PointCloudBundle | None = None
+    if args.point_cloud_npz:
+        print(f"Loading dense point cloud from {args.point_cloud_npz}...")
+        point_cloud_bundle = load_point_cloud_npz(Path(args.point_cloud_npz))
+
     num_frames_data = int(camera_xyz_world.shape[0])
     print(f"Loading local video frames from {args.video_path}...")
-    video_rgb = load_video_frames(Path(args.video_path), sample_step = args.sample_step, max_frames=num_frames_data)
+    video_rgb = load_video_frames(Path(args.video_path), sample_step=args.sample_step, max_frames=num_frames_data)
 
     num_frames = min(int(video_rgb.shape[0]), num_frames_data)
+    if point_cloud_bundle is not None and point_cloud_bundle.num_frames != num_frames:
+        print(
+            f"Warning: point cloud has {point_cloud_bundle.num_frames} frames; "
+            f"trimming to {num_frames} to match video/trajectory."
+        )
+        point_cloud_bundle = PointCloudBundle(
+            points_xyz_ref0=point_cloud_bundle.points_xyz_ref0[:num_frames],
+            points_vis=point_cloud_bundle.points_vis[:num_frames],
+            points_conf=point_cloud_bundle.points_conf[:num_frames],
+            points_rgb=(
+                point_cloud_bundle.points_rgb[:num_frames]
+                if point_cloud_bundle.points_rgb is not None
+                else None
+            ),
+            allowed_track_mask=point_cloud_bundle.allowed_track_mask,
+            point_is_dynamic=point_cloud_bundle.point_is_dynamic,
+            xyz_center=point_cloud_bundle.xyz_center,
+            xyz_radius=point_cloud_bundle.xyz_radius,
+            coordinate_convention=point_cloud_bundle.coordinate_convention,
+            num_frames=num_frames,
+        )
+
     video_rgb = video_rgb[:num_frames]
     camera_xyz_world = camera_xyz_world[:num_frames]
     identity_xyz_world = identity_xyz_world[:num_frames]
@@ -350,12 +599,15 @@ def main() -> None:
                 f"({npz_w}x{npz_h}). Reprojection may be misaligned."
             )
 
-    # Viewer-space trajectories (display only).
     camera_xyz_viewer = transform_points_for_viewer(camera_xyz_world)
     identity_xyz_viewer = transform_points_for_viewer(identity_xyz_world)
     tracks_xyz_viewer = transform_points_for_viewer(
         tracks_xyz_ref0.reshape(-1, 3)
     ).reshape(tracks_xyz_ref0.shape)
+
+    centroid_xyz_viewer: np.ndarray | None = None
+    if point_cloud_bundle is not None:
+        centroid_xyz_viewer = transform_points_for_viewer(point_cloud_bundle.xyz_center[None, :])[0]
 
     z_min_global, z_max_global = compute_global_depth_range(
         tracks_xyz_ref0=tracks_xyz_ref0,
@@ -375,18 +627,50 @@ def main() -> None:
         if all_pts
         else 1.0
     )
+    if point_cloud_bundle is not None:
+        radius = max(radius, float(point_cloud_bundle.xyz_radius))
 
     server = viser.ViserServer(host="127.0.0.1", port=int(args.port))
     print(f"\nLocal server active: http://localhost:{args.port}")
 
-    frame_slider = server.gui.add_slider("Frame", min=0, max=max(num_frames - 1, 0), step=1, initial_value=0)
-    show_frustum = server.gui.add_checkbox("Show camera frustum", initial_value=True)
-    show_tracks = server.gui.add_checkbox("Show identity track points (3D)", initial_value=True)
-    show_reprojection = server.gui.add_checkbox("Show 2D reprojection", initial_value=True)
-    global_depth_scale = server.gui.add_checkbox("Global depth colormap scale", initial_value=False)
-    point_radius_slider = server.gui.add_slider("Reprojection point radius", min=2, max=12, step=1, initial_value=5)
+    with server.gui.add_folder("Timeline", expand_by_default=True):
+        frame_slider = server.gui.add_slider("Frame", min=0, max=max(num_frames - 1, 0), step=1, initial_value=0)
+        prev_btn = server.gui.add_button("Previous frame")
+        next_btn = server.gui.add_button("Next frame")
+        play_box = server.gui.add_checkbox("Play", initial_value=False)
+        loop_box = server.gui.add_checkbox("Loop", initial_value=True)
+        fps_slider = server.gui.add_slider("FPS", min=1, max=30, step=1, initial_value=8)
+
+    with server.gui.add_folder("Display", expand_by_default=True):
+        show_camera_position = server.gui.add_checkbox("Show camera position", initial_value=True)
+        show_centroid = server.gui.add_checkbox("Show object centroid", initial_value=False)
+        show_frustum = server.gui.add_checkbox("Show camera frustum", initial_value=True)
+        show_tracks = server.gui.add_checkbox("Show identity track points (3D)", initial_value=True)
+        show_dense_motion_points = server.gui.add_checkbox("Show dense motion tracking points", initial_value=False)
+        show_reprojection = server.gui.add_checkbox("Show 2D reprojection", initial_value=True)
+        global_depth_scale = server.gui.add_checkbox("Global depth colormap scale", initial_value=False)
+        point_radius_slider = server.gui.add_slider("Reprojection point radius", min=2, max=12, step=1, initial_value=5)
+
+    show_dense_cloud = None
+    cloud_mode = None
+    show_cloud_background = None
+    cloud_size_slider = None
+    if point_cloud_bundle is not None:
+        with server.gui.add_folder("Dense point cloud", expand_by_default=True):
+            show_dense_cloud = server.gui.add_checkbox("Show dense point cloud", initial_value=True)
+            cloud_mode = server.gui.add_dropdown(
+                "Point cloud mode",
+                options=("3D", "4D"),
+                initial_value="4D",
+            )
+            show_cloud_background = server.gui.add_checkbox("Show background points", initial_value=True)
+            cloud_size_slider = server.gui.add_slider("Cloud point size", min=0.2, max=3.0, step=0.1, initial_value=1.0)
+
+    frame_image = server.gui.add_image(video_rgb[0], label="rgb_frame")
 
     dynamic_handles: list[Any] = []
+    static_cloud_handle: Any | None = None
+    static_cloud_signature: tuple[Any, ...] | None = None
     render_lock = threading.Lock()
 
     def clear_dynamic() -> None:
@@ -397,8 +681,19 @@ def main() -> None:
                 pass
         dynamic_handles.clear()
 
+    def clear_static_cloud() -> None:
+        nonlocal static_cloud_handle, static_cloud_signature
+        if static_cloud_handle is not None:
+            try:
+                static_cloud_handle.remove()
+            except Exception:
+                pass
+            static_cloud_handle = None
+        static_cloud_signature = None
+
     def add_dynamic(h: Any) -> None:
-        dynamic_handles.append(h)
+        if h is not None:
+            dynamic_handles.append(h)
 
     def _add_static_trajectory(name: str, xyz: np.ndarray, color: tuple[int, int, int]) -> None:
         segs = _trajectory_line_segments(xyz[:num_frames])
@@ -423,10 +718,7 @@ def main() -> None:
     _add_static_trajectory("camera", camera_xyz_viewer, (255, 64, 64))
     _add_static_trajectory("identity", identity_xyz_viewer, (64, 220, 100))
 
-    frame_image = server.gui.add_image(video_rgb[0], label="rgb_frame")
-
     def sync_all_clients_to_frame_camera(frame_idx: int) -> None:
-        """Set each connected client's viewport to the estimated camera at frame_idx."""
         t = int(np.clip(int(frame_idx), 0, max(num_frames - 1, 0)))
         if not np.isfinite(t_ref0_cam[t]).all():
             return
@@ -445,6 +737,63 @@ def main() -> None:
     @server.on_client_connect
     def _on_client_connect(client: viser.ClientHandle) -> None:
         sync_all_clients_to_frame_camera(int(frame_slider.value))
+
+    def _cloud_mode_value() -> Literal["3d", "4d"]:
+        if cloud_mode is None:
+            return "4d"
+        return "3d" if str(cloud_mode.value).upper() == "3D" else "4d"
+
+    def _render_dense_cloud(t: int) -> None:
+        nonlocal static_cloud_handle, static_cloud_signature
+        if point_cloud_bundle is None or show_dense_cloud is None or not bool(show_dense_cloud.value):
+            clear_static_cloud()
+            return
+
+        mode = _cloud_mode_value()
+        pts, cols = prepare_point_cloud_for_frame(
+            point_cloud_bundle,
+            t,
+            mode=mode,
+            show_background=bool(show_cloud_background.value) if show_cloud_background is not None else True,
+            point_budget=int(args.point_budget),
+            dynamic_only=False,
+        )
+        if pts.shape[0] <= 0:
+            clear_static_cloud()
+            return
+
+        size_scale = float(cloud_size_slider.value) if cloud_size_slider is not None else 1.0
+        if mode == "3d":
+            signature = (
+                mode,
+                bool(show_cloud_background.value) if show_cloud_background is not None else True,
+                int(args.point_budget),
+                round(size_scale, 3),
+                int(pts.shape[0]),
+            )
+            if static_cloud_signature != signature:
+                clear_static_cloud()
+                static_cloud_handle = add_point_cloud_to_viser_scene(
+                    server.scene,
+                    "/dense_cloud",
+                    pts,
+                    cols,
+                    scene_radius=radius,
+                    point_size_scale=size_scale,
+                )
+                static_cloud_signature = signature
+        else:
+            clear_static_cloud()
+            add_dynamic(
+                add_point_cloud_to_viser_scene(
+                    server.scene,
+                    "/dense_cloud",
+                    pts,
+                    cols,
+                    scene_radius=radius,
+                    point_size_scale=size_scale,
+                )
+            )
 
     def render() -> None:
         with render_lock:
@@ -469,7 +818,7 @@ def main() -> None:
                 display_frame = video_rgb[t]
             frame_image.image = display_frame
 
-            if np.isfinite(camera_xyz_viewer[t]).all():
+            if bool(show_camera_position.value) and np.isfinite(camera_xyz_viewer[t]).all():
                 add_dynamic(
                     server.scene.add_point_cloud(
                         "/current/camera",
@@ -488,6 +837,17 @@ def main() -> None:
                     )
                 )
 
+            if bool(show_centroid.value) and centroid_xyz_viewer is not None and np.isfinite(centroid_xyz_viewer).all():
+                add_dynamic(
+                    server.scene.add_point_cloud(
+                        "/current/centroid",
+                        points=centroid_xyz_viewer[None, :].astype(np.float32),
+                        colors=np.asarray([[255, 220, 64]], dtype=np.uint8),
+                        point_size=max(radius * 0.05, 0.04),
+                        point_shape="sparkle",
+                    )
+                )
+
             if bool(show_tracks.value):
                 vis_q = tracks_visibility[:, t] & np.isfinite(tracks_xyz_viewer[:, t]).all(axis=-1)
                 if np.any(vis_q):
@@ -500,6 +860,30 @@ def main() -> None:
                             point_size=max(radius * 0.012, 0.01),
                         )
                     )
+
+            if bool(show_dense_motion_points.value) and point_cloud_bundle is not None:
+                motion_pts, motion_cols = prepare_point_cloud_for_frame(
+                    point_cloud_bundle,
+                    t,
+                    mode="4d",
+                    show_background=False,
+                    point_budget=int(args.point_budget),
+                    dynamic_only=True,
+                )
+                if motion_pts.shape[0] > 0:
+                    add_dynamic(
+                        add_point_cloud_to_viser_scene(
+                            server.scene,
+                            "/current/dense_motion_points",
+                            motion_pts,
+                            motion_cols,
+                            scene_radius=radius,
+                            point_size_scale=2.0,
+                            point_shape="sparkle",
+                        )
+                    )
+
+            _render_dense_cloud(t)
 
             if bool(show_frustum.value) and np.isfinite(t_ref0_cam[t]).all():
                 pose_viewer = transform_pose_for_viewer(t_ref0_cam[t])
@@ -517,18 +901,49 @@ def main() -> None:
                     )
                 )
 
+    def step_frame(delta: int) -> None:
+        frame_slider.value = int(np.clip(int(frame_slider.value) + delta, 0, max(num_frames - 1, 0)))
+
+    prev_btn.on_click(lambda _: step_frame(-1))
+    next_btn.on_click(lambda _: step_frame(1))
+
     frame_slider.on_update(lambda _: render())
+    show_camera_position.on_update(lambda _: render())
+    show_centroid.on_update(lambda _: render())
     show_frustum.on_update(lambda _: render())
     show_tracks.on_update(lambda _: render())
+    show_dense_motion_points.on_update(lambda _: render())
     show_reprojection.on_update(lambda _: render())
     global_depth_scale.on_update(lambda _: render())
     point_radius_slider.on_update(lambda _: render())
+    if show_dense_cloud is not None:
+        show_dense_cloud.on_update(lambda _: render())
+    if cloud_mode is not None:
+        cloud_mode.on_update(lambda _: render())
+    if show_cloud_background is not None:
+        show_cloud_background.on_update(lambda _: render())
+    if cloud_size_slider is not None:
+        cloud_size_slider.on_update(lambda _: render())
 
     render()
     sync_all_clients_to_frame_camera(0)
     try:
         while True:
-            time.sleep(1.0)
+            if bool(play_box.value) and num_frames > 1:
+                step = 1
+                t_cur = int(frame_slider.value)
+                t_next = t_cur + step
+                if t_next >= num_frames:
+                    if bool(loop_box.value):
+                        t_next = 0
+                    else:
+                        play_box.value = False
+                        t_next = t_cur
+                if t_next != t_cur:
+                    frame_slider.value = t_next
+                time.sleep(max(1.0 / float(fps_slider.value), 1e-3))
+            else:
+                time.sleep(0.05)
     except KeyboardInterrupt:
         print("Closing down viewer...")
 
