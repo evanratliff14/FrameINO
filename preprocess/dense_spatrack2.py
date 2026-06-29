@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Dense 4D point cloud export using SpaTrackerV2 (compatible with offline_view_3d_demo.py)."""
+"""
+Dense 4D point cloud export using SpaTrackerV2 VGGT4Track (compatible with offline_view_3d_demo.py).
+
+Uses Eulerian per-frame depth unprojection at a fixed UV grid (same semantics as dense_track.py /
+OpenD4RT): at each frame t, grid cell q is lifted from depth at pixel (u_q, v_q) in that frame,
+then transformed into ref0. RGB is sampled at the same fixed UV each frame.
+"""
 
 from __future__ import annotations
 
@@ -11,7 +17,9 @@ import torch
 
 from vis_motion import (
     _ensure_spatracker_path,
+    _sample_depth_bilinear,
     _scale_uv_to_preprocessed,
+    _unproject_uv_depth,
     normalize_c2w_to_ref0,
     read_video_to_tensor,
     tensor_to_video_rgb,
@@ -25,73 +33,6 @@ from Open_d4rt.vis.build_like_demo import (
 )
 
 
-def _build_spatrack_queries(uv_px: np.ndarray) -> np.ndarray:
-    """Pixel UV seeds -> SpaTrack query_xyt [Q, 3] as [frame, u, v]."""
-    uv = np.asarray(uv_px, dtype=np.float32)
-    frame_idx = np.zeros((uv.shape[0], 1), dtype=np.float32)
-    return np.concatenate([frame_idx, uv], axis=1)
-
-
-def _lift_cam_tracks_to_ref0(
-    track3d_pred: np.ndarray,
-    t_ref0_cam: np.ndarray,
-) -> np.ndarray:
-    """Convert [T, N, 3+] camera-space tracks to [T, N, 3] ref0 world coords."""
-    xyz_cam = np.asarray(track3d_pred[:, :, :3], dtype=np.float64)
-    poses = np.asarray(t_ref0_cam, dtype=np.float64)
-    rot = poses[:, :3, :3]
-    trans = poses[:, :3, 3]
-    world = np.einsum("tij,tnj->tni", rot, xyz_cam) + trans[:, None, :]
-    return world.astype(np.float32)
-
-
-def _run_tracker_chunk(
-    tracker_model: torch.nn.Module,
-    video_for_tracker: torch.Tensor,
-    depth_tensor: np.ndarray,
-    intrs: np.ndarray,
-    extrs: np.ndarray,
-    unc_metric: np.ndarray,
-    query_xyt: np.ndarray,
-    num_frames: int,
-    device: torch.device,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    with torch.no_grad():
-        with torch.amp.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=device.type == "cuda"):
-            (
-                c2w_traj,
-                _intrs_out,
-                _point_map,
-                _conf_depth,
-                track3d_pred,
-                _track2d_pred,
-                vis_pred,
-                conf_pred,
-                _video_out,
-            ) = tracker_model.forward(
-                video_for_tracker,
-                depth=depth_tensor,
-                intrs=intrs,
-                extrs=extrs,
-                queries=query_xyt,
-                unc_metric=unc_metric,
-                fps=1,
-                full_point=False,
-                iters_track=4,
-                query_no_BA=True,
-                fixed_cam=False,
-                stage=1,
-                support_frame=num_frames - 1,
-                replace_ratio=0.2,
-            )
-    return (
-        c2w_traj.detach().cpu().numpy(),
-        track3d_pred.detach().cpu().numpy(),
-        vis_pred.detach().cpu().numpy(),
-        conf_pred.detach().cpu().numpy(),
-    )
-
-
 def infer_dense_point_cloud_spatrack2(
     *,
     device: torch.device,
@@ -99,11 +40,11 @@ def infer_dense_point_cloud_spatrack2(
     point_query_uv_px: np.ndarray,
     video_hw: tuple[int, int],
     front_ckpt: str,
-    tracker_ckpt: str,
-    query_chunk_size: int,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Build a dense ref0 point cloud by unprojecting VGGT4Track depth at a fixed UV grid each frame.
+    """
     _ensure_spatracker_path()
-    from models.SpaTrackV2.models.predictor import Predictor
     from models.SpaTrackV2.models.vggt4track.models.vggt_moe import VGGT4Track
     from models.SpaTrackV2.models.vggt4track.utils.load_fn import preprocess_image
 
@@ -115,16 +56,10 @@ def infer_dense_point_cloud_spatrack2(
     vggt4track_model = VGGT4Track.from_pretrained(front_ckpt)
     vggt4track_model.eval().to(device)
 
-    print(f"Loading SpaTrackV2 tracker from {tracker_ckpt}")
-    tracker_model = Predictor.from_pretrained(tracker_ckpt)
-    tracker_model.eval().to(device)
-
     video = video_tensor.float().to(device)
     video_proc = preprocess_image(video)[None]
-    video_for_tracker = video_proc.squeeze(0)
-
-    proc_h = int(video_for_tracker.shape[2])
-    proc_w = int(video_for_tracker.shape[3])
+    proc_h = int(video_proc.shape[3])
+    proc_w = int(video_proc.shape[4])
 
     print("Running VGGT4Track front-end (camera, depth)...")
     with torch.no_grad():
@@ -136,70 +71,70 @@ def infer_dense_point_cloud_spatrack2(
             depth_conf = predictions["unc_metric"]
 
     depth_tensor = depth_map.squeeze().detach().cpu().numpy()
-    extrs = extrinsic.squeeze().detach().cpu().numpy()
-    intrs = intrinsic.squeeze().detach().cpu().numpy()
-    unc_metric = (depth_conf.squeeze().detach().cpu().numpy() > 0.5).astype(np.float32)
+    c2w = extrinsic.squeeze().detach().cpu().numpy().astype(np.float64)
+    intrs = intrinsic.squeeze().detach().cpu().numpy().astype(np.float64)
+    depth_conf_np = depth_conf.squeeze().detach().cpu().numpy().astype(np.float32)
 
+    if depth_tensor.ndim == 2:
+        depth_tensor = depth_tensor[None, ...]
+    if depth_conf_np.ndim == 2:
+        depth_conf_np = depth_conf_np[None, ...]
+    if c2w.ndim == 2:
+        c2w = np.tile(c2w[None, ...], (num_frames, 1, 1))
+    if intrs.ndim == 2:
+        intrs = np.tile(intrs[None, ...], (num_frames, 1, 1))
+
+    num_frames = min(num_frames, int(depth_tensor.shape[0]), int(c2w.shape[0]), int(intrs.shape[0]))
+    depth_tensor = depth_tensor[:num_frames]
+    depth_conf_np = depth_conf_np[:num_frames]
+    c2w = c2w[:num_frames]
+    intrs = intrs[:num_frames]
+
+    t_ref0_cam = normalize_c2w_to_ref0(c2w)
     scaled_uv = _scale_uv_to_preprocessed(
         point_query_uv_px,
         orig_hw=(height, width),
         proc_hw=(proc_h, proc_w),
     )
 
-    chunk_size = max(1, int(query_chunk_size))
-    shared_t_ref0_cam: np.ndarray | None = None
     points_xyz_ref0 = np.full((num_frames, num_points, 3), np.nan, dtype=np.float32)
     points_vis = np.zeros((num_frames, num_points), dtype=bool)
     points_conf = np.full((num_frames, num_points), np.nan, dtype=np.float32)
 
     print(
-        f"Running SpaTrackV2 Predictor on {num_points} grid queries "
-        f"(chunk_size={chunk_size}, proc resolution {proc_w}x{proc_h})..."
+        f"Unprojecting VGGT4Track depth for {num_points} grid queries "
+        f"over {num_frames} frames (proc resolution {proc_w}x{proc_h})..."
     )
+    for t in range(num_frames):
+        depth_t = np.asarray(depth_tensor[t], dtype=np.float64)
+        conf_t = np.asarray(depth_conf_np[t], dtype=np.float32)
+        k = np.asarray(intrs[t], dtype=np.float64)
 
-    for start in range(0, num_points, chunk_size):
-        end = min(start + chunk_size, num_points)
-        query_xyt = _build_spatrack_queries(scaled_uv[start:end])
-        c2w, track3d, vis, conf = _run_tracker_chunk(
-            tracker_model,
-            video_for_tracker,
-            depth_tensor,
-            intrs,
-            extrs,
-            unc_metric,
-            query_xyt,
-            num_frames,
-            device,
+        depth_vals = _sample_depth_bilinear(depth_t, scaled_uv)
+        conf_vals = _sample_depth_bilinear(conf_t, scaled_uv)
+        xyz_cam = _unproject_uv_depth(scaled_uv, depth_vals, k)
+
+        rot = t_ref0_cam[t, :3, :3].astype(np.float64)
+        trans = t_ref0_cam[t, :3, 3].astype(np.float64)
+        xyz_ref0 = (xyz_cam.astype(np.float64) @ rot.T) + trans[None, :]
+
+        valid = (
+            (conf_vals > 0.5)
+            & np.isfinite(depth_vals)
+            & (depth_vals > 1e-4)
+            & np.isfinite(xyz_ref0).all(axis=-1)
         )
-        if shared_t_ref0_cam is None:
-            shared_t_ref0_cam = normalize_c2w_to_ref0(c2w)
-
-        n_chunk = end - start
-        points_xyz_ref0[:, start:end, :] = _lift_cam_tracks_to_ref0(
-            track3d[:, :n_chunk, :],
-            shared_t_ref0_cam,
-        )
-        vis_arr = np.asarray(vis)
-        if vis_arr.ndim == 3:
-            vis_arr = vis_arr.squeeze(-1)
-        conf_arr = np.asarray(conf)
-        if conf_arr.ndim == 3:
-            conf_arr = conf_arr.squeeze(-1)
-        points_vis[:, start:end] = (vis_arr[:, :n_chunk] > 0.5)
-        points_conf[:, start:end] = conf_arr[:, :n_chunk].astype(np.float32)
-        print(f"  Tracked queries {start}:{end}")
-
-    if shared_t_ref0_cam is None:
-        raise RuntimeError("SpaTrackV2 produced no tracked queries.")
+        points_xyz_ref0[t, valid, :] = xyz_ref0[valid].astype(np.float32)
+        points_vis[t, valid] = True
+        points_conf[t, valid] = conf_vals[valid].astype(np.float32)
 
     return points_xyz_ref0, points_vis, points_conf
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Dense point cloud export via SpaTrackerV2.")
+    parser = argparse.ArgumentParser(description="Dense point cloud export via SpaTrackerV2 VGGT4Track depth.")
     parser.add_argument("--num_frames", type=int, default=64)
     parser.add_argument("--sample_step", type=int, default=1)
-    parser.add_argument("--query_chunk_size", type=int, default=2048)
     parser.add_argument("--video_path", type=str, required=True)
     parser.add_argument("--track-min-visible-frames", type=int, default=6)
     parser.add_argument(
@@ -214,12 +149,6 @@ if __name__ == "__main__":
         default="Yuxihenry/SpatialTrackerV2_Front",
         help="SpaTrackV2 VGGT4Track front-end checkpoint (HF id or local path).",
     )
-    parser.add_argument(
-        "--spatrack_tracker_ckpt",
-        type=str,
-        default="Yuxihenry/SpatialTrackerV2-Offline",
-        help="SpaTrackV2 Predictor checkpoint (HF id or local path).",
-    )
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -230,7 +159,7 @@ if __name__ == "__main__":
     h0, w0 = int(video_rgb_np.shape[1]), int(video_rgb_np.shape[2])
 
     with timer("Building grid of query points"):
-        point_query_uv_px = _build_uv_grid(w0, h0, cols=w0, rows=h0, max_points=16384)
+        point_query_uv_px = _build_uv_grid(w0, h0, cols=h0, rows=w0, max_points=16384)
         num_points = int(point_query_uv_px.shape[0])
 
     with timer("Computing point cloud"):
@@ -240,9 +169,10 @@ if __name__ == "__main__":
             point_query_uv_px=point_query_uv_px,
             video_hw=(h0, w0),
             front_ckpt=args.spatrack_front_ckpt,
-            tracker_ckpt=args.spatrack_tracker_ckpt,
-            query_chunk_size=args.query_chunk_size,
         )
+
+    num_frames = int(points_xyz_ref0.shape[0])
+    video_rgb_np = video_rgb_np[:num_frames]
 
     suppress_depth_boundary_tracks = True
     depth_boundary_rel_thresh = 0.12
