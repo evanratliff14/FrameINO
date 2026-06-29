@@ -6,20 +6,164 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+import cv2
 import numpy as np
 
 from vis_motion import (
     infer_dense_point_cloud_vipe,
     read_video_to_tensor,
     tensor_to_video_rgb,
-    timer,
+    timer
 )
-from Open_d4rt.vis.build_like_demo import (
-    _build_uv_grid,
-    _compute_non_boundary_candidate_mask,
-    _compute_point_motion_scores,
-    _sample_rgb_from_uv_sequence,
-)
+def _grid_query_points(
+    width: int,
+    height: int,
+    cols: int,
+    rows: int,
+    margin_ratio: float,
+    max_points: int,
+) -> np.ndarray:
+    cols = max(1, int(cols))
+    rows = max(1, int(rows))
+    margin_x = float(max(width - 1, 0)) * float(np.clip(margin_ratio, 0.0, 0.45))
+    margin_y = float(max(height - 1, 0)) * float(np.clip(margin_ratio, 0.0, 0.45))
+    xs = np.linspace(margin_x, float(max(width - 1, 0)) - margin_x, num=cols, dtype=np.float32)
+    ys = np.linspace(margin_y, float(max(height - 1, 0)) - margin_y, num=rows, dtype=np.float32)
+    grid = np.stack(np.meshgrid(xs, ys, indexing="xy"), axis=-1).reshape(-1, 2)
+    if grid.shape[0] > max_points:
+        pick = np.linspace(0, grid.shape[0] - 1, num=max_points, dtype=np.int64)
+        grid = grid[pick]
+    return grid.astype(np.float32)
+
+
+def _build_uv_grid(width: int, height: int, cols: int, rows: int, max_points: int) -> np.ndarray:
+    pts = _grid_query_points(
+        width=int(width),
+        height=int(height),
+        cols=int(cols),
+        rows=int(rows),
+        margin_ratio=0.02,
+        max_points=int(max_points),
+    )
+    return pts.astype(np.float32)
+
+
+def _sample_rgb_from_uv_sequence(video_rgb: np.ndarray, uv_px: np.ndarray) -> np.ndarray:
+    video = np.asarray(video_rgb, dtype=np.uint8)
+    uv = np.asarray(uv_px, dtype=np.float32)
+    t = int(video.shape[0])
+    n = int(uv.shape[1])
+    rgb = np.zeros((t, n, 3), dtype=np.uint8)
+    for ti in range(t):
+        for qi in range(n):
+            x = float(uv[ti, qi, 0])
+            y = float(uv[ti, qi, 1])
+            if not np.isfinite(x) or not np.isfinite(y):
+                continue
+            xi = int(np.clip(np.rint(x), 0, max(video.shape[2] - 1, 0)))
+            yi = int(np.clip(np.rint(y), 0, max(video.shape[1] - 1, 0)))
+            rgb[ti, qi] = video[ti, yi, xi]
+    return rgb
+
+
+def _infer_regular_grid_shape(query_uv_px: np.ndarray) -> tuple[int, int] | None:
+    pts = np.asarray(query_uv_px, dtype=np.float32)
+    if pts.ndim != 2 or pts.shape[1] != 2 or pts.shape[0] <= 0:
+        return None
+    xs = np.unique(np.round(pts[:, 0], decimals=4))
+    ys = np.unique(np.round(pts[:, 1], decimals=4))
+    if int(xs.size) * int(ys.size) != int(pts.shape[0]):
+        return None
+    return int(ys.size), int(xs.size)
+
+
+def _compute_non_boundary_candidate_mask(
+    *,
+    query_uv_px: np.ndarray,
+    xyz_ref0_frame0: np.ndarray,
+    visibility_frame0: np.ndarray,
+    rel_thresh: float,
+    abs_thresh: float,
+    dilate_radius: int,
+) -> np.ndarray:
+    num_points = int(query_uv_px.shape[0])
+    keep = np.ones((num_points,), dtype=bool)
+    grid_shape = _infer_regular_grid_shape(query_uv_px)
+    if grid_shape is None:
+        return keep
+
+    rows, cols = grid_shape
+    xyz = np.asarray(xyz_ref0_frame0, dtype=np.float32).reshape(rows, cols, 3)
+    vis = np.asarray(visibility_frame0, dtype=bool).reshape(rows, cols)
+    finite = np.isfinite(xyz).all(axis=-1)
+    valid = vis & finite
+    z = xyz[..., 2]
+
+    boundary = np.zeros((rows, cols), dtype=bool)
+
+    def _mark(
+        diff: np.ndarray,
+        z_ref: np.ndarray,
+        vmask: np.ndarray,
+        sl_a: tuple[slice, slice],
+        sl_b: tuple[slice, slice],
+    ) -> None:
+        thresh = np.maximum(float(abs_thresh), float(rel_thresh) * np.maximum(np.abs(z_ref), 1e-6))
+        edge = vmask & np.isfinite(diff) & (diff > thresh)
+        boundary[sl_a] |= edge
+        boundary[sl_b] |= edge
+
+    if cols > 1:
+        diff_x = np.abs(z[:, 1:] - z[:, :-1])
+        vmask_x = valid[:, 1:] & valid[:, :-1]
+        z_ref_x = np.minimum(np.abs(z[:, 1:]), np.abs(z[:, :-1]))
+        _mark(diff_x, z_ref_x, vmask_x, (slice(None), slice(1, None)), (slice(None), slice(None, -1)))
+    if rows > 1:
+        diff_y = np.abs(z[1:, :] - z[:-1, :])
+        vmask_y = valid[1:, :] & valid[:-1, :]
+        z_ref_y = np.minimum(np.abs(z[1:, :]), np.abs(z[:-1, :]))
+        _mark(diff_y, z_ref_y, vmask_y, (slice(1, None), slice(None)), (slice(None, -1), slice(None)))
+
+    if int(dilate_radius) > 0:
+        k = int(2 * int(dilate_radius) + 1)
+        kernel = np.ones((k, k), dtype=np.uint8)
+        boundary = cv2.dilate(boundary.astype(np.uint8), kernel, iterations=1) > 0
+
+    keep = (~boundary).reshape(-1)
+    keep &= valid.reshape(-1)
+    return keep
+
+
+def _compute_point_motion_scores(
+    *,
+    xyz_ref0: np.ndarray,
+    visibility: np.ndarray,
+    confidence: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    xyz = np.asarray(xyz_ref0, dtype=np.float32)
+    vis = np.asarray(visibility, dtype=bool)
+    conf = np.asarray(confidence, dtype=np.float32)
+    num_frames, num_points = xyz.shape[:2]
+    finite = np.isfinite(xyz).all(axis=-1)
+    valid = vis & finite
+    motion_scores = np.zeros((num_points,), dtype=np.float32)
+    visible_counts = valid.sum(axis=0).astype(np.int32)
+
+    for qi in range(num_points):
+        valid_idx = np.flatnonzero(valid[:, qi])
+        if valid_idx.size < 2:
+            continue
+        pts = xyz[valid_idx, qi]
+        ref = pts[0]
+        displacement = np.linalg.norm(pts - ref[None, :], axis=-1)
+        smooth_motion = np.linalg.norm(np.diff(pts, axis=0), axis=-1)
+        motion_scores[qi] = (
+            float(np.nanpercentile(displacement, 90))
+            + 0.35 * float(np.nanpercentile(smooth_motion, 75))
+            + 0.02 * float(np.nanmean(conf[valid_idx, qi]))
+        )
+
+    return motion_scores, visible_counts
 
 
 if __name__ == "__main__":
