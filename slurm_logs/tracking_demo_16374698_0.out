@@ -1,5 +1,0 @@
-Loading video: preprocess/media/scooter.mp4
-  Frames: 33, resolution: 1920x1080
-Segmenting frame-0 with OneFormer...
-[segment_model] Execution time: 4.7454 seconds
-  Sampled 24 query points (mask area ratio 0.225)

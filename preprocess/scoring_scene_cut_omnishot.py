@@ -1,5 +1,5 @@
 '''
-    Scene Cut using the model of AutoShot
+    Scene Cut using the model of OmniShot
 '''
 
 import os, sys, shutil
@@ -27,6 +27,7 @@ csv.field_size_limit(sys.maxsize)
 root_path = os.path.abspath('.')
 sys.path.append(root_path)
 from preprocess.auxiliary.AutoShot import TransNetV2Supernet
+os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 
 
 def get_batches(frames):
@@ -83,8 +84,11 @@ def get_clean_shots(model, device, frames: np.ndarray) -> list:
     ranges = model.inference(torch.tensor(frames), mode="clean_shot")
 
     if len(ranges) == 0:
+        print(frames.shape)
         print("No clean shot ranges detected for video")
         return [0,0]
+    else:
+        print(f"Found ranges of: {ranges}")
 
     return ranges
 
@@ -167,15 +171,16 @@ def single_process(csv_folder_path, store_folder_path, GPU_offset):
 
             try:
 
-                # Read the video
+                # Read the video in 96x128; see OmniShot paper
                 video_stream, err = ffmpeg.input(
                                                     video_path
                                                 ).output(
-                                                    "pipe:", format = "rawvideo", pix_fmt = "rgb24", s = "48x27", vsync = 'passthrough',
+                                                    "pipe:", format = "rawvideo", pix_fmt = "rgb24", s = "96x128", vsync = 'passthrough',
                                                 ).run(
                                                     capture_stdout=True, capture_stderr=True
-                                                )       # Different from other curaiton, we set a low resolution Setting here.
-                video_np = np.frombuffer(video_stream, np.uint8).reshape([-1, 27, 48, 3])
+                                                )      
+                
+                video_np = np.frombuffer(video_stream, np.uint8).reshape([-1, 96, 128, 3])
 
                 # Fetch in the valid duration range
                 video_np = video_np[valid_duration[0] : valid_duration[1]]
