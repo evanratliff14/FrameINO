@@ -19,6 +19,9 @@
 *.pem
 *.npy
 *.sh
+*.out
+*.npz
+scratch/*
 
 
 pretrained/*

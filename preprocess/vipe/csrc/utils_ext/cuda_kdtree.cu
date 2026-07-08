@@ -32,6 +32,14 @@
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
  * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  *************************************************************************/
+#define THRUST_IGNORE_CPLUSPLUS_VERSION_CHECK
+#include <thrust/detail/config.h>
+#include <thrust/tuple.h>
+#include <thrust/detail/type_traits.h>
+
+
+// Force Thrust to explicitly forward its tuple implementation directly to std::tuple
+#define BOOST_PP_VARIADICS 1
 
 #include "cuda_kdtree.cuh"
 // #define THRUST_DEBUG 1
@@ -43,6 +51,8 @@
 #include <thrust/copy.h>
 #include <thrust/scan.h>
 #include <thrust/count.h>
+#include <tuple>
+
 
 #include <limits>
 

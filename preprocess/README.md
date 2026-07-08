@@ -75,6 +75,23 @@ After we have the score, we need to use the following to sort and remove:
 <br>
 <br>
 
+N. ViPE: Note: you may need to inject the compiler 
+```shell
+if not any("-std=" in flag for flag in cpp_flags):
+    cpp_flags.append("-std=c++20")
+
+if not any("-std=" in flag for flag in cuda_flags):
+    cuda_flags.append("-std=c++20")
+```
+into line 66 of setup.py in the ViPE codebase. 
+
+See the official installation instructions: https://nv-tlabs.github.io/vipe/installation/
+
+I recommend cd'ing into ViPE directory, then using the pip install -e . method
+
+You may also need to add headers to the file cuda_kdtree.cu if you encounter an error with the compiler, but using c++20 may fix that issue. 
+<br>
+<br>
 
 6.  Camera Pose Estimation and Filter (The environment might has slight difference than ours, we recommend to use thiers [here](https://github.com/henry123-boy/SpaTrackerV2))
 ```shell

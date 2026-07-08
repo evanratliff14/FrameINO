@@ -244,8 +244,8 @@ if __name__ == "__main__":
 
 
     # Fundamental Setting
-    csv_folder_path = "/scratch/uft5by/OpenVid-1M/csv/general_dataset_filter_basic"            # Input
-    store_folder_path = "/scratch/uft5by/OpenVid-1M/csv/general_dataset_scoring_SceneCut"      # Output
+    csv_folder_path = "/scratch/uft5by/OpenVid-1M/csv/general_dataset_scoring_vtss_left"            # Input
+    store_folder_path = "/scratch/uft5by/OpenVid-1M/csv/general_dataset_scoring_scene_cut"      # Output
     # pretrained_weight_path = "../pretrained/ckpt_0_200_0.pth"           # Weight Path (needs to download from their original website)
     pretrained_weight_path = "../omnishot/OmniShotCut_ckpt.pth"           # Weight Path (needs to download from their original website)
     # threshold = 0.296       # Empricial Setting for the threshold

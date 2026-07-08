@@ -63,6 +63,13 @@ if "CONDA_PREFIX" in os.environ:
 cpp_flags = get_cpp_flags()
 cuda_flags = get_cuda_flags()
 
+if not any("-std=" in flag for flag in cpp_flags):
+    cpp_flags.append("-std=c++20")
+
+if not any("-std=" in flag for flag in cuda_flags):
+    cuda_flags.append("-std=c++20")
+# --------------------------------------------------------------
+
 packages = find_packages()
 setup(
     packages=packages,
