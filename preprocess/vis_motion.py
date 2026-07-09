@@ -514,14 +514,15 @@ def run_opend4rt_backend(
     model = load_d4rt_model(config_path, ckpt_path, device)
 
     print("Estimating camera trajectory (Umeyama extrinsics + intrinsics)...")
-    camera_result = extract_camera_trajectory(
-        model=model,
-        video_model_rgb=video_model_rgb,
-        image_hw=(height, width),
-        camera_grid_size=int(camera_grid_size),
-        query_chunk_size=int(query_chunk_size),
-        umeyama_slide_window=bool(umeyama_slide_window),
-    )
+    with timer("camera"):
+        camera_result = extract_camera_trajectory(
+            model=model,
+            video_model_rgb=video_model_rgb,
+            image_hw=(height, width),
+            camera_grid_size=int(camera_grid_size),
+            query_chunk_size=int(query_chunk_size),
+            umeyama_slide_window=bool(umeyama_slide_window),
+        )
 
     with timer("tracking"):
         print("Tracking identity queries in ref0 world frame...")

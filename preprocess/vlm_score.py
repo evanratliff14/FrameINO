@@ -13,21 +13,74 @@ import json
 import numpy as np
 import math
 import torch
-from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig, AutoProcessor, 
-
 from qwen_vl_utils import process_vision_info
+from transformers import AutoProcessor
+from vllm import LLM, SamplingParams
+
 csv.field_size_limit(sys.maxsize)       # Default setting is 131072, 10x expand should be enough
 os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
-
+os.environ['VLLM_WORKER_MULTIPROC_METHOD'] = 'spawn'
 
 
 # Handler function that raises TimeoutError
 def timeout_handler(signum, frame):
     raise TimeoutError("Time exceeded for function execution")
 
+def prepare_inputs_for_vllm(messages, processor):
+    text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    # qwen_vl_utils 0.0.14+ reqired
+    image_inputs, video_inputs, video_kwargs = process_vision_info(
+        messages,
+        image_patch_size=processor.image_processor.patch_size,
+        return_video_kwargs=True,
+        return_video_metadata=True
+    )
+    print(f"video_kwargs: {video_kwargs}")
+
+    mm_data = {}
+    if image_inputs is not None:
+        mm_data['image'] = image_inputs
+    if video_inputs is not None:
+        mm_data['video'] = video_inputs
+
+    return {
+        'prompt': text,
+        'multi_modal_data': mm_data,
+        'mm_processor_kwargs': video_kwargs
+    }
+
+def get_message(video_path, frame_start, frame_end, instruction_prompts):
+# Messages containing a local video path and a text query
 
 
-def single_process(input_csv_folder_path, store_csv_folder_path, GPU_offset):
+                                # video_np = video_full_np[valid_duration[0] : valid_duration[1]]
+
+    messages = [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "video",
+                                "video": video_path,
+                                "resized_height": target_height,
+                                "resized_width": target_width,
+                                "frame_start": frame_start,
+                                "frame_end": frame_end,
+                                # force it to process 2 fps (uniform subsample) with process_vision_info() util
+                                "fps": 2.0,
+                            },
+                            {
+                                "type": "text", 
+                                "text": p,
+                            },
+                        ],
+                    } for p in instruction_prompts
+                ]
+    return messages
+        
+
+
+def single_process(input_csv_folder_path, store_csv_folder_path, GPU_offset, llm, processor,legend, instruction_prompt, sampling_params):
     
 
     # Setting
@@ -59,23 +112,6 @@ def single_process(input_csv_folder_path, store_csv_folder_path, GPU_offset):
             print("The number of rows we have processed in the store csv is ", len(store_rows))
             
 
-    # Init the model
-    processor = AutoProcessor.from_pretrained(model_path)
-    # use quantization for memory (we are bathcing)
-    bnb_config = BitsAndBytesConfig(
-                                        load_in_4bit=True,
-                                        bnb_4bit_compute_dtype=torch.float16,  # Use float16 for computations
-                                        bnb_4bit_use_double_quant=True,
-                                        bnb_4bit_quant_type='nf4',  # NormalFloat4 quantization
-                                    )
-    model = AutoModelForCausalLM.from_pretrained(
-        "Qwen/Qwen3.6-27B", #"Qwen/Qwen3.6-35B-A3B"
-        torch_dtype="auto",
-        device_map="auto",
-        quantization_config=bnb_config,
-    )
-    
-
     # Read all row in the csv file
     start_time = time.time()
     info_lists = []       # The order will be follow automatically
@@ -105,8 +141,8 @@ def single_process(input_csv_folder_path, store_csv_folder_path, GPU_offset):
 
             # Read important information
             video_path = row[elements["video_path"]]
-            # valid_duration = json.loads(row[elements["valid_duration"]]). -> is the metadata useful, considering it may induce bias
-            # Panoptic_Info_all = json.loads(row[elements["Panoptic_Segmentation"]])
+            valid_duration = json.loads(row[elements["valid_duration"]])
+            Panoptic_Info_all = json.loads(row[elements["Panoptic_Segmentation"]])
             
 
             # Resume mode will execute until we have the last store row matched
@@ -122,59 +158,47 @@ def single_process(input_csv_folder_path, store_csv_folder_path, GPU_offset):
             
             try:
 
-                # Messages containing a local video path and a text query
-                messages = [
-                                {
-                                    "role": "user",
-                                    "content": [
-                                        {
-                                            "type": "video",
-                                            "video": video_path,
-                                            "max_pixels": 256 * 384,            # The video information here should be deprecated
-                                        },
-                                        {
-                                            "type": "text", 
-                                            "text": instruction_prompt,
-                                        },
-                                    ],
-                                }
-                            ]
-
-
-                # Read the video by ffmpeg, not decod
-                resolution = str(target_width) + "x" + str(target_height)
-                video_stream, err = ffmpeg.input(
-                                                    video_path
-                                                ).output(
-                                                    "pipe:", format = "rawvideo", pix_fmt = "rgb24", s = resolution, vsync = 'passthrough',
-                                                ).run(
-                                                    capture_stdout = True, capture_stderr = True    # If there is bug, command capture_stderr
-                                                )    # The resize is already included
-                video_full_np = np.frombuffer(video_stream, np.uint8).reshape(-1, target_height, target_width, 3)
+                ## LEGACY
+                # # Read the video by ffmpeg, not decod
+                # resolution = str(target_width) + "x" + str(target_height)
+                # video_stream, err = ffmpeg.input(
+                #                                     video_path
+                #                                 ).output(
+                #                                     "pipe:", format = "rawvideo", pix_fmt = "rgb24", s = resolution, vsync = 'passthrough',
+                #                                 ).run(
+                #                                     capture_stdout = True, capture_stderr = True    # If there is bug, command capture_stderr
+                #                                 )    # The resize is already included
+                # video_full_np = np.frombuffer(video_stream, np.uint8).reshape(-1, target_height, target_width, 3)
                 
-                # Fetch the valid duration
-                video_np = video_full_np[valid_duration[0] : valid_duration[1]]
-                video_tensor = torch.tensor(video_np).to(device)
-                num_frames = len(video_np)
+                # # Fetch the valid duration
+                # video_np = video_full_np[valid_duration[0] : valid_duration[1]]
+                # video_tensor = torch.tensor(video_np).to(device)
+                # num_frames = len(video_np)
+
+
+                frame_start =valid_duration[0]
+                frame_end =valid_duration[1]
+                messages = get_message(video_path, frame_start, frame_end, instruction_prompts=instruction_prompt)
+                inputs = prepare_inputs_for_vllm(messages = messages, processor=processor)
 
 
                 output_text_all = []
                 for (panoptic_start_frame_idx, _) in Panoptic_Info_all:
 
-                    # NOTE: panoptic_start_frame_idx这个应该是根据valid curation crop以后开始算的，所以这里的0就是crop以后的0
-
+                    #NOTE: we are switching from video cropping to qwen util native fps subsampling. we are able to process the whole video now. 
+                    # panoptic_start_frame_idx这个应该是根据valid curation crop以后开始算的，所以这里的0就是crop以后的0
                     # Define the Start End range 
-                    end_frame_idx = min(num_frames, panoptic_start_frame_idx + max_frames_consider)
-
-
+                    # end_frame_idx = min(num_frames, panoptic_start_frame_idx + max_frames_consider)
                     # Crop the video to the needed duration
-                    crop_video_inputs = [video_tensor[panoptic_start_frame_idx : end_frame_idx : sample_frame_freq].permute(0, 3, 1, 2)]
-                    print("Number of frames process is ", len(crop_video_inputs[0]))
+                    # crop_video_inputs = [video_tensor[panoptic_start_frame_idx : end_frame_idx : sample_frame_freq].permute(0, 3, 1, 2)]
+                    # print("Number of frames process is ", len(crop_video_inputs[0]))
 
 
 
                     # In Qwen 2.5 VL, frame rate information is also input into the model to align with absolute time.
+
                     text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+                    messa
                     # image_inputs, video_inputs = process_vision_info(messages)        # HACK: deprecated, memory leak occurs
 
 
@@ -257,7 +281,7 @@ if __name__ == "__main__":
 
 
     # Model and inputs outputs Setting       
-    model_path = "Qwen/Qwen3.6-27B"      # Qwen2.5-VL-7B-Instruct  Qwen2.5-VL-72B-Instruct.  It seems that 32B is newer and competitive compared to 72B version
+    checkpoint_path = "Qwen/Qwen3-VL-30B-A3B-Instruct-FP8"     # Qwen2.5-VL-7B-Instruct  Qwen2.5-VL-72B-Instruct.  It seems that 32B is newer and competitive compared to 72B version
     input_csv_folder_path = "/PATH/TO/CSV_FOLDER/folder"                  # Input 
     store_csv_folder_path = "/PATH/TO/CSV_FOLDER/folder"          # Output
     GPU_offset = args.GPU_offset
@@ -281,12 +305,33 @@ if __name__ == "__main__":
         "Is the video background heavily unfocused or motion-blurred?",
         # g. Are there major occlusions blocking subject from view? -> we will use this later
         "Is there at least one camera subject AND is the subject movement dynamic",
-        "Does the scene contain sexual content, physical violence/gore, or overtly political content"
+        "Does the scene contain sexual, violent/gory, political, or any other 'Not-Safe-For-Work' content?"
         # "Does the camera move dynamically?"
     ]
+
+    # Init the model
+    processor = AutoProcessor.from_pretrained(checkpoint_path)
+    llm = LLM(
+        model=checkpoint_path,
+        trust_remote_code=True,
+        gpu_memory_utilization=0.70,
+        enforce_eager=False,
+        tensor_parallel_size=torch.cuda.device_count(),
+        seed=0
+    )
+    sampling_params = SamplingParams(
+        temperature=0,
+        max_tokens=1024,
+        top_k=-1,
+        stop_token_ids=[],
+    )
+    
+
+    
+
     # 1 means that if the answer is true to the question[idx], then we give it a score of 1. -1 means that if the question is 
     # false, then we store a 1. Else store 0 
-    [-1, 1, -1, -1, -1, 1, 1]
+    legend = [-1, 1, -1, -1, -1, 1, 1]
 
 
     if not os.path.exists(store_csv_folder_path):
@@ -294,7 +339,7 @@ if __name__ == "__main__":
 
 
     # Inferece Process
-    single_process(input_csv_folder_path, store_csv_folder_path, GPU_offset)
+    single_process(input_csv_folder_path, store_csv_folder_path, GPU_offset, llm, processor,legend, instruction_prompt, sampling_params)
 
 
     print("Finished!")
