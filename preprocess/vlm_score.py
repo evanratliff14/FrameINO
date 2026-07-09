@@ -142,7 +142,6 @@ def single_process(input_csv_folder_path, store_csv_folder_path, GPU_offset, llm
             # Read important information
             video_path = row[elements["video_path"]]
             valid_duration = json.loads(row[elements["valid_duration"]])
-            Panoptic_Info_all = json.loads(row[elements["Panoptic_Segmentation"]])
             
 
             # Resume mode will execute until we have the last store row matched
@@ -180,73 +179,56 @@ def single_process(input_csv_folder_path, store_csv_folder_path, GPU_offset, llm
                 frame_end =valid_duration[1]
                 messages = get_message(video_path, frame_start, frame_end, instruction_prompts=instruction_prompt)
                 inputs = prepare_inputs_for_vllm(messages = messages, processor=processor)
+                inputs = inputs.to("cuda")
+
+                if debug:
+                    for i, input_ in enumerate(inputs):
+                        print()
+                        print('=' * 40)
+                        print(f"Inputs[{i}]: {input_['prompt']=!r}")
+                    print('\n' + '>' * 40)
+
+                ## ** python "dereference" unpacks the dictionary into arguments
+                generated_ids = llm.generate(**inputs, sampling_params=sampling_params, batch_size = len(inputs))
+                 
+                if debug:
+                    for i, output in enumerate(outputs):
+                        generated_text = output.outputs[0].text
+                        print()
+                        print('=' * 40)
+                        print(f"Generated text: {generated_text!r}")
+
+                # take the prompt out of the output
+                generated_ids_trimmed = [
+                                            out_ids[len(in_ids) :] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
+                                        ]
+                #decode
+                output = processor.batch_decode(
+                                                        generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
+                                                    )[0]
+                print("Output text is ", output, " for the video ", video_path, " of the range " + str(frame_start) + "-" + str(frame_end) + "\n")
 
 
-                output_text_all = []
-                for (panoptic_start_frame_idx, _) in Panoptic_Info_all:
-
-                    #NOTE: we are switching from video cropping to qwen util native fps subsampling. we are able to process the whole video now. 
-                    # panoptic_start_frame_idx这个应该是根据valid curation crop以后开始算的，所以这里的0就是crop以后的0
-                    # Define the Start End range 
-                    # end_frame_idx = min(num_frames, panoptic_start_frame_idx + max_frames_consider)
-                    # Crop the video to the needed duration
-                    # crop_video_inputs = [video_tensor[panoptic_start_frame_idx : end_frame_idx : sample_frame_freq].permute(0, 3, 1, 2)]
-                    # print("Number of frames process is ", len(crop_video_inputs[0]))
-
-
-
-                    # In Qwen 2.5 VL, frame rate information is also input into the model to align with absolute time.
-
-                    text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-                    messa
-                    # image_inputs, video_inputs = process_vision_info(messages)        # HACK: deprecated, memory leak occurs
-
-
-                    # Final Pre-Process
-                    inputs = processor(
-                                            text = [text],
-                                            images = None,              # NOTE: This is not needed when there is video inputs
-                                            videos = crop_video_inputs,
-                                            padding = True,
-                                            return_tensors = "pt"
-                                        )
-                    second_per_grid_ts = inputs.pop('second_per_grid_ts')
-                    second_per_grid_ts = [float(s) for s in second_per_grid_ts]
-                    inputs.update({
-                                        'second_per_grid_ts': second_per_grid_ts
-                                    })
-                    inputs = inputs.to("cuda")
-
-
-                    # Generate
-                    generated_ids = model.generate(**inputs, max_new_tokens=128)
-                    generated_ids_trimmed = [
-                                                out_ids[len(in_ids) :] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
-                                            ]
-                    output_text = processor.batch_decode(
-                                                            generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
-                                                        )[0]
-                    print("Output text is ", output_text, " for the video ", video_path, " of the range " + str(panoptic_start_frame_idx) + "-" + str(end_frame_idx) + " for valid duration of ", valid_duration, "\n")
-
-
-                    # Append to the list
-                    output_text_all.append(output_text)
+                #now output is a list of logits
+                output = np.array(output)
+                output[output ==0]= -1
+                # determine the desirability of each output
+                output = output * legend
+                # acquire scores of good (1) and bad (0) where before these scores represented T/F
+                output = output[output==-1]= 0
 
 
                 # Update the text prompt
-                info_lists.append(row + [json.dumps(output_text_all)])
+                info_lists.append(row.to_list())
                 print("Finished Instance", str(row_idx), "\n")
-
 
                 # Clean cache
                 gc.collect()
-
 
                 # Log update (The update will be quite random for this file, because we may skip earlier on)
                 if row_idx % store_freq == 0:
                     
                     print("We have processed ", float(row_idx/1000), "K video")
-                    print("The number of valid videos we found in this iter is ", len(info_lists))
                     full_time_spent = int(time.time() - start_time)
                     print("Time spent is %d min %d s" %(full_time_spent//60, full_time_spent%60))
 
@@ -281,7 +263,7 @@ if __name__ == "__main__":
 
 
     # Model and inputs outputs Setting       
-    checkpoint_path = "Qwen/Qwen3-VL-30B-A3B-Instruct-FP8"     # Qwen2.5-VL-7B-Instruct  Qwen2.5-VL-72B-Instruct.  It seems that 32B is newer and competitive compared to 72B version
+    checkpoint_path = "Qwen/Qwen3.6-35B-A3B"     # Qwen2.5-VL-7B-Instruct  Qwen2.5-VL-72B-Instruct.  It seems that 32B is newer and competitive compared to 72B version
     input_csv_folder_path = "/PATH/TO/CSV_FOLDER/folder"                  # Input 
     store_csv_folder_path = "/PATH/TO/CSV_FOLDER/folder"          # Output
     GPU_offset = args.GPU_offset
@@ -294,15 +276,15 @@ if __name__ == "__main__":
     target_width = 384
     max_frames_consider = 160             # About 81 * 2
     sample_frame_freq = 16                # 原来是1fps，大改就是24个step; 目前更加dense一点的吧，设置16
+    debug = True
 
     # Batch of prompts
     # Engineering: we prove binary 0,1 outcome with few tokens possible by asking there exists questions if possible
     instruction_prompt = [
         "The video has text overlays, watermarks, artificial borders, or multiple views?",
         "The video is of real-life?",
-        "The video contains scene-cuts, transitions, shot changes, or heavy processing?",
-        "Does the scene have multiple reference frames, like camera in moving car?",
-        "Is the video background heavily unfocused or motion-blurred?",
+        "Does the scene have multiple reference frames, like scene in a moving car?",
+        "Is any part of the video heavily unfocused or motion-blurred?",
         # g. Are there major occlusions blocking subject from view? -> we will use this later
         "Is there at least one camera subject AND is the subject movement dynamic",
         "Does the scene contain sexual, violent/gory, political, or any other 'Not-Safe-For-Work' content?"
@@ -314,24 +296,36 @@ if __name__ == "__main__":
     llm = LLM(
         model=checkpoint_path,
         trust_remote_code=True,
-        gpu_memory_utilization=0.70,
+        gpu_memory_utilization=0.80,
         enforce_eager=False,
         tensor_parallel_size=torch.cuda.device_count(),
-        seed=0
+        seed=0,
+        max_model_len=4096, # Caps total context sequence window to save huge VRAM allocations
+        enable_prefix_caching=False,   # Disables memory retention between different queries
+        max_num_seqs=64               # Allows vLLM to process up to 64 independent chunks in parallel
     )
-    sampling_params = SamplingParams(
-        temperature=0,
-        max_tokens=1024,
-        top_k=-1,
-        stop_token_ids=[],
-    )
-    
 
+    # retrieve the encodings of our target outputs
+    token_id_0 = processor.tokenizer.encode("0", add_special_tokens=False)[0]
+    token_id_1 = processor.tokenizer.encode("1", add_special_tokens=False)[0]
+
+    # Apply a massive positive logit bias to ONLY these two tokens
+    # Mathematically impossible for the model to pick anything else
+    binary_logit_bias = {
+        token_id_0: 100.0,
+        token_id_1: 100.0
+    }
+
+    sampling_params = SamplingParams(
+        temperature=0,          # deterministic
+        max_tokens=1,           # only one token is needed now
+        logit_bias=binary_logit_bias
+    )
     
 
     # 1 means that if the answer is true to the question[idx], then we give it a score of 1. -1 means that if the question is 
     # false, then we store a 1. Else store 0 
-    legend = [-1, 1, -1, -1, -1, 1, 1]
+    legend = np.array([-1, 1, -1, -1, 1, -1])
 
 
     if not os.path.exists(store_csv_folder_path):
