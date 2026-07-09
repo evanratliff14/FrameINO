@@ -1,5 +1,5 @@
 '''
-    Video Caption by Qwen VL 3.6 28B
+    Video Caption by Qwen VL 3.6 35B-A3B
 '''
 
 import os, sys, shutil
@@ -21,10 +21,6 @@ csv.field_size_limit(sys.maxsize)       # Default setting is 131072, 10x expand 
 os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 os.environ['VLLM_WORKER_MULTIPROC_METHOD'] = 'spawn'
 
-
-# Handler function that raises TimeoutError
-def timeout_handler(signum, frame):
-    raise TimeoutError("Time exceeded for function execution")
 
 def prepare_inputs_for_vllm(messages, processor):
     text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
@@ -86,7 +82,6 @@ def single_process(input_csv_folder_path, store_csv_folder_path, GPU_offset, llm
     # Setting
     store_freq = 10
     device = 'cuda'
-
 
 
     # Read the csv file
@@ -157,24 +152,6 @@ def single_process(input_csv_folder_path, store_csv_folder_path, GPU_offset, llm
             
             try:
 
-                ## LEGACY
-                # # Read the video by ffmpeg, not decod
-                # resolution = str(target_width) + "x" + str(target_height)
-                # video_stream, err = ffmpeg.input(
-                #                                     video_path
-                #                                 ).output(
-                #                                     "pipe:", format = "rawvideo", pix_fmt = "rgb24", s = resolution, vsync = 'passthrough',
-                #                                 ).run(
-                #                                     capture_stdout = True, capture_stderr = True    # If there is bug, command capture_stderr
-                #                                 )    # The resize is already included
-                # video_full_np = np.frombuffer(video_stream, np.uint8).reshape(-1, target_height, target_width, 3)
-                
-                # # Fetch the valid duration
-                # video_np = video_full_np[valid_duration[0] : valid_duration[1]]
-                # video_tensor = torch.tensor(video_np).to(device)
-                # num_frames = len(video_np)
-
-
                 frame_start =valid_duration[0]
                 frame_end =valid_duration[1]
                 messages = get_message(video_path, frame_start, frame_end, instruction_prompts=instruction_prompt)
@@ -192,7 +169,7 @@ def single_process(input_csv_folder_path, store_csv_folder_path, GPU_offset, llm
                 generated_ids = llm.generate(**inputs, sampling_params=sampling_params, batch_size = len(inputs))
                  
                 if debug:
-                    for i, output in enumerate(outputs):
+                    for i, output in enumerate(generated_ids):
                         generated_text = output.outputs[0].text
                         print()
                         print('=' * 40)
@@ -283,13 +260,17 @@ if __name__ == "__main__":
     instruction_prompt = [
         "The video has text overlays, watermarks, artificial borders, or multiple views?",
         "The video is of real-life?",
-        "Does the scene have multiple reference frames, like scene in a moving car?",
+        "Does the scene contain enough stable background features to perform camera estimation?"
         "Is any part of the video heavily unfocused or motion-blurred?",
         # g. Are there major occlusions blocking subject from view? -> we will use this later
-        "Is there at least one camera subject AND is the subject movement dynamic",
+        "Is there at least one object and does the object move in at least two out of three camera axes",
         "Does the scene contain sexual, violent/gory, political, or any other 'Not-Safe-For-Work' content?"
         # "Does the camera move dynamically?"
     ]
+
+     # 1 means that if the answer is true to the question[idx], then we give it a score of 1. -1 means that if the question is 
+    # false, then we store a 1. Else store 0 
+    legend = np.array([-1, 1, 1, -1, 1, -1])
 
     # Init the model
     processor = AutoProcessor.from_pretrained(checkpoint_path)
@@ -323,9 +304,7 @@ if __name__ == "__main__":
     )
     
 
-    # 1 means that if the answer is true to the question[idx], then we give it a score of 1. -1 means that if the question is 
-    # false, then we store a 1. Else store 0 
-    legend = np.array([-1, 1, -1, -1, 1, -1])
+   
 
 
     if not os.path.exists(store_csv_folder_path):
