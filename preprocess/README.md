@@ -87,11 +87,30 @@ into line 66 of setup.py in the ViPE codebase.
 
 See the official installation instructions: https://nv-tlabs.github.io/vipe/installation/
 
-I recommend cd'ing into ViPE directory, then using the pip install -e . method
+I recommend cd'ing into ViPE directory, then using the uv sync --dev method
 
 You may also need to add headers to the file cuda_kdtree.cu if you encounter an error with the compiler, but using c++20 may fix that issue. 
 <br>
 <br>
+
+L. VLM Video filtering
+run 
+```shell
+git clone https://github.com/evanratliff14/Qwen3-VL.git
+cd Qwen3-VL/qwen_vl_utils
+pip install -e .
+```
+
+Also, execute 
+```shell
+hf download Qwen/Qwen3-VL-30B-A3B-Instruct --local-dir PATH/TO/dir
+```
+You will need to update the filepath strings inside of preprocess/vlm_score.py
+
+```shell
+sbatch submit_vlm.sh
+```
+
 
 6.  Camera Pose Estimation and Filter (The environment might has slight difference than ours, we recommend to use thiers [here](https://github.com/henry123-boy/SpaTrackerV2))
 ```shell

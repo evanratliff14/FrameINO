@@ -88,9 +88,6 @@ def score_density_f(combined_vtss):
     # Plot the density
     combined_vtss.plot.density(color="green", linewidth=2)
     cdf = combined_vtss.value_counts(normalize=True).sort_index().cumsum()
-    plt.title("Density plot of Video Training Suitability Score")
-    plt.xlabel("VTSS (higher is better, 0 is synonymous to 3/5 in paper)")
-    plt.savefig("Density plot of vtss")
 
 def main(csv_filepath):
     pattern = csv_filepath + "/sub*.csv"
@@ -108,10 +105,7 @@ def main(csv_filepath):
         # Read the unique file path 'fp' from the glob loop
         df = pd.read_csv(fp)
         length+=len(df)
-        if "vtss" in df.columns:
-            all_vtss_series.append(df["vtss"])
-        else:
-            print(f"Warning: 'vtss' column missing in {fp}")
+        all_vtss_series.append(df)
 
     if not all_vtss_series:
         print("No 'vtss' data found to plot.")
@@ -120,8 +114,51 @@ def main(csv_filepath):
 
     # Combine all collected series into a single master Series
     combined_vtss = pd.concat(all_vtss_series, ignore_index=True)
+    instruction_prompt = [
+        "The video has text overlays, watermarks, artificial borders, or multiple views?",
+        "The video is of real-life?",
+        "Does the scene contain enough stable background features to perform camera estimation?",
+        "Is any part of the video heavily unfocused or motion-blurred?",
+        "Is there at least one motionable subject and does that subject move in at least two out of three camera axes directions?",
+        "Does the scene contain sexual, violent/gory, political, or any other 'Not-Safe-For-Work' content?",
+        "The video contains scene-cuts, transitions, shot changes, or heavy processing?"
+    ]
     # ccdf(combined_vtss)
-    score_density_f(combined_vtss)
+    # corr_matrix = df[instruction_prompt].corr(numeric_only=True)
+
+    # # 3. Create a heatmap visualization
+    # plt.figure(figsize=(30, 30))
+    # sns.heatmap(
+    #     corr_matrix, 
+    #     annot=True,          # Show the correlation numbers inside the boxes
+    #     cmap='coolwarm',     # Red for positive, blue for negative correlation
+    #     fmt='.1f',           # Limit decimals to 2 places
+    #     vmin=-1, vmax=1,     # Fix the scale boundaries to standard correlation limits
+    #     linewidths=0.5       # Add small dividers between cells
+    # )
+    # plt.tight_layout() # Prevents labels from getting cut off at the edges
+    # for i,p in enumerate(instruction_prompt):
+    #     score_density_f(combined_vtss[p])
+
+    #     plt.title(f"Density plot of \"{" ".join(p.split(" ")[:6])}...\"")
+
+    #     plt.savefig(f"{i}_density.jpg", dpi=300)
+    #     plt.close()
+
+    # shot_change = df[(df[instruction_prompt[6]] > 0.5) & (len(df["SceneCut_AutoShot"]) >1)]
+    # sc_len = len(shot_change)
+    # percent_fail = sc_len/length
+
+    # nsfw = df[df[instruction_prompt[5]] < 0.8]
+    # nsfw.to_csv("nsfw.csv")
+    # df= df[(df[instruction_prompt[4]] < 0.2) | (df[instruction_prompt[5]] < 0.8) | (df[instruction_prompt[3]] < 0.5) | (df[instruction_prompt[2]] < 0.1) | (df[instruction_prompt[1]] < 0.5) | (df[instruction_prompt[0]] < 0.5)]             
+    df['vlm_score'] = df[instruction_prompt[:5]].sum(axis=1) 
+    score_density_f(df['vlm_score']) 
+    plt.title(f"Density plot of 'vlm_score'")
+    plt.savefig(f"vlm_score.jpg", dpi=300)                                                        
+    # print(f"Shot change: {sc_len}")
+    # print(f"Percent fail is {percent_fail}")
+    print(f"Cut number: {len(df)}")
     print(f"Saved data from {length} rows")
 
 

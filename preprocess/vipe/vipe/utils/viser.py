@@ -405,7 +405,7 @@ def run_viser(base_path: Path, port: int = 20540):
     global _global_context
     _global_context = GlobalContext(artifacts=sorted(artifacts, key=lambda x: x.artifact_name))
 
-    server = viser.ViserServer(host=get_host_ip(), port=port, verbose=False)
+    server = viser.ViserServer(host="0.0.0.0", port=port, verbose=False)
     client_closures: dict[int, ClientClosures] = {}
 
     @server.on_client_connect
