@@ -323,10 +323,19 @@ class SLAMSystem:
         original_intrinsics = torch.stack(
             [resizer.recover_intrinsics(self.buffer.intrinsics[v]) for v, resizer in enumerate(resizers)]
         )
+        dense_flow = self.buffer.dense_flow
+        # unpack the dict
+
+        # per frame (there will be less keyframes than frames).  sorting in O(n) because of this design
+        dense_flow_list = [None] * total_n_frames
+        for k, v in dense_flow.items():
+            dense_flow_list[k] = v
 
         return SLAMOutput(
             trajectory=filled_return.poses.inv(),
             intrinsics=original_intrinsics,
             rig=SE3(self.buffer.rig.clone()),
             slam_map=slam_map,
+            dense_flow = dense_flow_list,
+            sparse_flow = None
         )

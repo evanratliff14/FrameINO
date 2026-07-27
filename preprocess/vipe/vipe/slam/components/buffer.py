@@ -34,6 +34,7 @@ from vipe.utils.cameras import CameraType
 from vipe.utils.logging import pbar
 from vipe.utils.misc import unpack_optional
 from vipe.utils.visualization import POINTS_STENCIL, draw_lines_batch, draw_points_batch
+from vipe.slam.components.factor_graph import coords_grid
 
 from ..ba.kernel import build_robust_kernel
 from ..ba.solver import Solver, SparseBlockVector
@@ -72,6 +73,7 @@ class GraphBuffer:
         self.ba_config = ba_config
         self.sparse_tracks = sparse_tracks
         self.camera_type = camera_type
+        self.dense_flow = {}
 
         assert self.height % 8 == 0 and self.width % 8 == 0
 
@@ -545,8 +547,8 @@ class GraphBuffer:
             return
 
         solver = Solver(compute_energy=verbose)
-        solver.add_term(
-            DenseDepthFlowTerm(
+
+        dense_flow_term =DenseDepthFlowTerm(
                 pose_i_inds=pi,
                 pose_j_inds=pj,
                 rig_i_inds=qi,
@@ -559,9 +561,14 @@ class GraphBuffer:
                 rig=None,
                 image_size=(self.height // 8, self.width // 8),
                 camera_type=self.camera_type,
-            ),
+            )
+        solver.add_term(
+            dense_flow_term,
             kernel=robust_kernel,
         )
+       
+
+
 
         if self.sparse_tracks.enabled:
             # This does not support cross-view tracking yet.

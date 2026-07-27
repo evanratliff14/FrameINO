@@ -41,6 +41,8 @@ class FrameAttribute(Enum):
     INSTANCE = "instance"
     MASK = "mask"
     METRIC_DEPTH = "metric_depth"
+    SPARSE_FLOW = "sparse_flow"
+    DENSE_FLOW = "dense_flow"
 
 
 @dataclass(kw_only=True, slots=True)
@@ -59,6 +61,8 @@ class VideoFrame:
     - mask: Binary mask of the frame. The shape is (H, W), with 0 for invalid pixels.
     - metric_depth: The depth map of the frame. The shape is (H, W). Value is in metric scale.
     - information: Additional information about the frame
+    - sparse_flow: the incoming flow from the sparse flow computed from the shi-tomasi corner detector in (H, W)
+    - dense_flow: the incoming flow from the dense flow in (H/8, W/8)?
     """
 
     SKY_PROMPT = "sky"
@@ -73,6 +77,8 @@ class VideoFrame:
     mask: torch.Tensor | None = None
     metric_depth: torch.Tensor | None = None
     information: str = ""
+    sparse_flow: torch.Tensor | None = None
+    dense_flow: torch.Tensor | None = None
 
     def size(self) -> tuple[int, int]:
         return (self.rgb.shape[0], self.rgb.shape[1])
@@ -95,6 +101,10 @@ class VideoFrame:
             attributes.add(FrameAttribute.MASK)
         if self.metric_depth is not None:
             attributes.add(FrameAttribute.METRIC_DEPTH)
+        if self.sparse_flow is not None:
+            attributes.add(FrameAttribute.SPARSE_FLOW)
+        if self.dense_flow is not None:
+            attributes.add(FrameAttribute.DENSE_FLOW)
 
         return attributes
 
@@ -111,6 +121,10 @@ class VideoFrame:
             return self.mask
         if attribute == FrameAttribute.METRIC_DEPTH:
             return self.metric_depth
+        if attribute == FrameAttribute.SPARSE_FLOW:
+            return self.sparse_flow
+        if attribute == FrameAttribute.DENSE_FLOW:
+            return self.dense_flow
         raise ValueError(f"Attribute {attribute} is not available in the frame.")
 
     def set_attribute(self, attribute: FrameAttribute, value: Any) -> None:
@@ -126,6 +140,10 @@ class VideoFrame:
             self.mask = value
         elif attribute == FrameAttribute.METRIC_DEPTH:
             self.metric_depth = value
+        elif attribute == FrameAttribute.SPARSE_FLOW:
+            self.sparse_flow = value
+        elif attribute == FrameAttribute.DENSE_FLOW:
+            self.dense_flow = value
         else:
             raise ValueError(f"Attribute {attribute} is not available in the frame.")
 
@@ -144,6 +162,8 @@ class VideoFrame:
             intrinsics=map_cpu(self.intrinsics),
             camera_type=self.camera_type,
             information=self.information,
+            sparse_flow=map_cpu(self.sparse_flow),
+            dense_flow = map_cpu(self.dense_flow)
         )
 
     def cuda(self) -> "VideoFrame":
@@ -161,8 +181,11 @@ class VideoFrame:
             intrinsics=map_cuda(self.intrinsics),
             camera_type=self.camera_type,
             information=self.information,
+            sparse_flow=map_cuda(self.sparse_flow),
+            dense_flow = map_cuda(self.dense_flow)
         )
 
+    # decide if we need this function to accomodate sparse_flow and dense_flow
     def resize(self, size: tuple[int, int]) -> "VideoFrame":
         """
         Resize the frame to a given size.
@@ -212,7 +235,7 @@ class VideoFrame:
             camera_type=new_camera_type,
             information=self.information,
         )
-
+    # decide if flow is needed
     def crop(self, top: int, bottom: int, left: int, right: int) -> "VideoFrame":
         """
         Crop the frame with given top, bottom, left, right.
@@ -221,6 +244,7 @@ class VideoFrame:
         right = self.size()[1] - right
 
         new_rgb = self.rgb[top:bottom, left:right]
+
 
         new_mask = None
         if self.mask is not None:
@@ -241,6 +265,8 @@ class VideoFrame:
             new_intrinsics[3] -= top
 
         new_camera_type = self.camera_type
+
+
 
         return VideoFrame(
             raw_frame_idx=self.raw_frame_idx,

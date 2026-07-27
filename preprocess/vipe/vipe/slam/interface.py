@@ -194,6 +194,8 @@ class SLAMOutput:
     # Residual of BA (unit is pixel/diagonal) -- average num of pixels/diagonal between predicted and observed flows
     # Should be of range [0, 1]
     ba_residual: float = 0.0
+    dense_flow: list[torch.Tensor] | None = None
+    sparse_flow: list[torch.Tensor] | None= None
 
     @property
     def keyframe_ids(self) -> np.ndarray:
@@ -203,3 +205,11 @@ class SLAMOutput:
     def get_view_trajectory(self, view_idx: int) -> SE3:
         assert self.rig is not None, "Rig not available."
         return self.trajectory * self.rig[view_idx][None]  # type: ignore
+
+    def get_sparse_flow(self) ->list[torch.Tensor] | None:
+        return self.sparse_flow
+
+    def get_dense_flow(self) ->list[torch.Tensor] | None:
+        assert self.dense_flow is not None, "Dense Flow not available"
+        return self.dense_flow
+

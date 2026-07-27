@@ -292,6 +292,21 @@ class FactorGraph:
             target = rearrange(target, "1 k h w c -> k (h w) c", c=2, h=ht, w=wd)
             weight = rearrange(weight, "1 k h w c -> k (h w) c", c=2, h=ht, w=wd)
 
+            # this code will only work for monocular view, else we have nviews x num_edges as k dim
+            # note we work with self.target, not target for dependencies' sake
+            dense_flow = self.target-self.coords0
+            # in practice the w_u and w_v should be similar scalars, so we reduce for memory
+            flow_with_weight = torch.cat([dense_flow, self.weight.mean(-1, keepdim=True)], dim=-1)  # (..., 3)
+
+            # we get to k h w c weight=2 edges
+            for k in range(self.ii.shape[0]):
+                src = int(self.buffer.tstamp[self.ii[k]])
+                dst = int(self.buffer.tstamp[self.jj[k]])
+                
+                # we'll only track forward flow
+                if dst-src == 1:
+                    self.buffer.dense_flow[dst] = flow_with_weight[0,k].detach().cpu()
+
             # dense bundle adjustment
             self.buffer.bundle_adjustment(
                 target=target,
@@ -374,6 +389,19 @@ class FactorGraph:
             ht, wd = self.coords0.shape[0:2]
             target = rearrange(self.target, "1 k h w c -> k (h w) c", c=2, h=ht, w=wd)
             weight = rearrange(self.weight, "1 k h w c -> k (h w) c", c=2, h=ht, w=wd)
+
+            dense_flow = self.target-self.coords0
+            # in practice the w_u and w_v should be similar scalars, so we reduce for memory
+            flow_with_weight = torch.cat([dense_flow, self.weight.mean(-1, keepdim=True)], dim=-1)  # (..., 3)
+
+            # we get to k h w c weight=2 edges
+            for k in range(self.ii.shape[0]):
+                src = int(self.buffer.tstamp[self.ii[k]])
+                dst = int(self.buffer.tstamp[self.jj[k]])
+                
+                # we'll only track forward flow
+                if dst>src:
+                    self.buffer.dense_flow[dst] = flow_with_weight[0,k].detach().cpu()
 
             self.buffer.bundle_adjustment(
                 target=target,

@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from functools import cache
 import logging
 import tempfile
 import zipfile
@@ -64,6 +65,14 @@ class ArtifactPath:
     @property
     def flow_path(self) -> Path:
         return self.base_path / "flow" / f"{self.artifact_name}.zip"
+        
+    @property
+    def sparse_flow_path(self) -> Path:
+        return self.base_path / "sparse_flow" / f"{self.artifact_name}.zip"
+
+    @property
+    def dense_flow_path(self) -> Path:
+        return self.base_path / "dense_flow" / f"{self.artifact_name}.zip"
 
     @property
     def mask_path(self) -> Path:
@@ -277,6 +286,62 @@ def save_depth_artifacts(out_path: ArtifactPath, cached_final_stream: VideoStrea
                     z.write(f.name, f"{frame_idx:05d}.exr")
 
 
+def save_flow_artifacts(out_path: ArtifactPath, cached_final_stream: VideoStream):
+    """
+    Save flow artifacts to the sparse_flow_path and dense_flow_path zips
+    """
+    sparse_flows = cached_final_stream.get_stream_attribute(FrameAttribute.SPARSE_FLOW)
+    dense_flows = cached_final_stream.get_stream_attribute(FrameAttribute.DENSE_FLOW)
+    sparse_path = out_path.sparse_flow_path
+    dense_path = out_path.dense_flow_path
+
+    sparse_flow_list = [
+        (frame_idx, sparse_flow)
+        for frame_idx, sparse_flow in enumerate(sparse_flows)
+    ]
+    dense_flow_list = [
+        (frame_idx, dense_flows)
+        for frame_idx, dense_flows in enumerate(dense_flows)
+    ]
+    for flow_list, output_path in [(dense_flow_list,dense_path), (sparse_flow_list ,sparse_path )]:
+        if flow_list is None:
+            continue
+
+        if len(flow_list) > 0:
+            output_path.parent.mkdir(exist_ok=True, parents=True)
+            with zipfile.ZipFile(output_path, "w", zipfile.ZIP_DEFLATED) as z:
+                for frame_idx, flow in flow_list:
+                    # we track a per-frame as per the class convention for frameattributes, but many will have NOne
+                    if flow is None:
+                        continue
+
+                    flow = flow.cpu().numpy()
+                    height, width, _ = flow.shape
+                    header = OpenEXR.Header(width, height)
+                    # use R/G convention for optical flow
+                    header["channels"] = {
+                        "u": Imath.Channel(Imath.PixelType(Imath.PixelType.HALF)),
+                        "v": Imath.Channel(Imath.PixelType(Imath.PixelType.HALF)),
+                        "w": Imath.Channel(Imath.PixelType(Imath.PixelType.HALF))
+                        }
+                    # channel-wise slice to store separately
+                    u = np.ascontiguousarray(flow[..., 0].astype(np.float16))
+                    v = np.ascontiguousarray(flow[..., 1].astype(np.float16))
+                    w = np.ascontiguousarray(flow[..., 2].astype(np.float16))
+
+
+                    with tempfile.NamedTemporaryFile(suffix=".exr") as f:
+                        exr = OpenEXR.OutputFile(f.name, header)
+                        exr.writePixels(
+                            {"u":u.tobytes(),
+                            "v": v.tobytes(),
+                            "w": w.tobytes(),
+                            }
+                            )
+                        exr.close()
+                        z.write(f.name, f"{frame_idx:05d}.exr")
+
+
 def read_depth_artifacts(zip_file_path: Path) -> Iterator[tuple[int, torch.Tensor]]:
     """
     Read metric depth from zipped exr files.
@@ -342,6 +407,8 @@ def save_artifacts(out_path: ArtifactPath, cached_final_stream: VideoStream) -> 
     """
     Save each attribute independently.
     """
+    #TODO: only save what we need to maximize storage capability. ex. for non presentational purposes we don't need the RGB,
+    # we probably won't need the intrinsinsics? 
 
     # Save OpenCV cam2world matrices as 4x4 matrix in npz file
     save_pose_artifacts(out_path, cached_final_stream)
@@ -354,6 +421,9 @@ def save_artifacts(out_path: ArtifactPath, cached_final_stream: VideoStream) -> 
 
     # Save metric depth as zipped exr files.
     save_depth_artifacts(out_path, cached_final_stream)
+
+    # Evan Ratliff - save dense flow tracks with which to match the dynamic masks with
+    save_flow_artifacts(out_path, cached_final_stream)
 
     # Save Instance mask as zipped PNG files.
     instance_list = [

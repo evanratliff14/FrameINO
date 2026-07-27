@@ -88,6 +88,8 @@ class DefaultAnnotationPipeline(Pipeline):
                 {
                     FrameAttribute.POSE: slam_output.get_view_trajectory(view_idx),  # type: ignore
                     FrameAttribute.INTRINSICS: [slam_output.intrinsics[view_idx]] * len(video_stream),
+                    FrameAttribute.DENSE_FLOW: slam_output.get_dense_flow(),
+                    FrameAttribute.SPARSE_FLOW: [None] * len(video_stream)
                 }
             )
         ]
