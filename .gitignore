@@ -34,3 +34,4 @@ preprocess/sam2_code
 !requirements/*
 !__assets__/*
 !__assets__/page/*
+preprocess/.deps/*

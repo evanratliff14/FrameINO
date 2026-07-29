@@ -194,7 +194,7 @@ class SLAMOutput:
     # Residual of BA (unit is pixel/diagonal) -- average num of pixels/diagonal between predicted and observed flows
     # Should be of range [0, 1]
     ba_residual: float = 0.0
-    dense_flow: list[torch.Tensor] | None = None
+    dense_flow: dict[tuple[int, int], torch.Tensor] | None = None
     sparse_flow: list[torch.Tensor] | None= None
 
     @property
@@ -209,7 +209,6 @@ class SLAMOutput:
     def get_sparse_flow(self) ->list[torch.Tensor] | None:
         return self.sparse_flow
 
-    def get_dense_flow(self) ->list[torch.Tensor] | None:
-        assert self.dense_flow is not None, "Dense Flow not available"
+    def get_dense_flow(self) -> dict[tuple[int, int], torch.Tensor] | None:
         return self.dense_flow
 

@@ -88,8 +88,6 @@ class DefaultAnnotationPipeline(Pipeline):
                 {
                     FrameAttribute.POSE: slam_output.get_view_trajectory(view_idx),  # type: ignore
                     FrameAttribute.INTRINSICS: [slam_output.intrinsics[view_idx]] * len(video_stream),
-                    FrameAttribute.DENSE_FLOW: slam_output.get_dense_flow(),
-                    FrameAttribute.SPARSE_FLOW: [None] * len(video_stream)
                 }
             )
         ]
@@ -147,7 +145,7 @@ class DefaultAnnotationPipeline(Pipeline):
             artifact_path.meta_info_path.parent.mkdir(exist_ok=True, parents=True)
             if self.out_cfg.save_artifacts:
                 logger.info(f"Saving artifacts to {artifact_path}")
-                io.save_artifacts(artifact_path, output_stream)
+                io.save_artifacts(artifact_path, output_stream, slam_output)
                 with artifact_path.meta_info_path.open("wb") as f:
                     pickle.dump({"ba_residual": slam_output.ba_residual}, f)
 

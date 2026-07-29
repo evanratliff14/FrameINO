@@ -29,6 +29,7 @@ import OpenEXR
 import torch
 
 from vipe.ext.lietorch import SE3
+from vipe.slam.interface import SLAMOutput
 from vipe.streams.base import FrameAttribute, VideoFrame, VideoStream
 from vipe.utils.cameras import CameraType
 from vipe.utils.geometry import se3_matrix_to_se3
@@ -286,60 +287,35 @@ def save_depth_artifacts(out_path: ArtifactPath, cached_final_stream: VideoStrea
                     z.write(f.name, f"{frame_idx:05d}.exr")
 
 
-def save_flow_artifacts(out_path: ArtifactPath, cached_final_stream: VideoStream):
+def save_flow_artifacts(out_path: ArtifactPath, slam_output: SLAMOutput):
     """
-    Save flow artifacts to the sparse_flow_path and dense_flow_path zips
+    Save dense flow artifacts keyed by (src, dst) video-frame indices.
     """
-    sparse_flows = cached_final_stream.get_stream_attribute(FrameAttribute.SPARSE_FLOW)
-    dense_flows = cached_final_stream.get_stream_attribute(FrameAttribute.DENSE_FLOW)
-    sparse_path = out_path.sparse_flow_path
+    dense_flows = slam_output.get_dense_flow()
+    if not dense_flows:
+        return
+
     dense_path = out_path.dense_flow_path
+    dense_path.parent.mkdir(exist_ok=True, parents=True)
+    with zipfile.ZipFile(dense_path, "w", zipfile.ZIP_DEFLATED) as z:
+        for (src, dst), flow in dense_flows.items():
+            flow = flow.cpu().numpy()
+            height, width, _ = flow.shape
+            header = OpenEXR.Header(width, height)
+            header["channels"] = {
+                "u": Imath.Channel(Imath.PixelType(Imath.PixelType.HALF)),
+                "v": Imath.Channel(Imath.PixelType(Imath.PixelType.HALF)),
+                "w": Imath.Channel(Imath.PixelType(Imath.PixelType.HALF)),
+            }
+            u = np.ascontiguousarray(flow[..., 0].astype(np.float16))
+            v = np.ascontiguousarray(flow[..., 1].astype(np.float16))
+            w = np.ascontiguousarray(flow[..., 2].astype(np.float16))
 
-    sparse_flow_list = [
-        (frame_idx, sparse_flow)
-        for frame_idx, sparse_flow in enumerate(sparse_flows)
-    ]
-    dense_flow_list = [
-        (frame_idx, dense_flows)
-        for frame_idx, dense_flows in enumerate(dense_flows)
-    ]
-    for flow_list, output_path in [(dense_flow_list,dense_path), (sparse_flow_list ,sparse_path )]:
-        if flow_list is None:
-            continue
-
-        if len(flow_list) > 0:
-            output_path.parent.mkdir(exist_ok=True, parents=True)
-            with zipfile.ZipFile(output_path, "w", zipfile.ZIP_DEFLATED) as z:
-                for frame_idx, flow in flow_list:
-                    # we track a per-frame as per the class convention for frameattributes, but many will have NOne
-                    if flow is None:
-                        continue
-
-                    flow = flow.cpu().numpy()
-                    height, width, _ = flow.shape
-                    header = OpenEXR.Header(width, height)
-                    # use R/G convention for optical flow
-                    header["channels"] = {
-                        "u": Imath.Channel(Imath.PixelType(Imath.PixelType.HALF)),
-                        "v": Imath.Channel(Imath.PixelType(Imath.PixelType.HALF)),
-                        "w": Imath.Channel(Imath.PixelType(Imath.PixelType.HALF))
-                        }
-                    # channel-wise slice to store separately
-                    u = np.ascontiguousarray(flow[..., 0].astype(np.float16))
-                    v = np.ascontiguousarray(flow[..., 1].astype(np.float16))
-                    w = np.ascontiguousarray(flow[..., 2].astype(np.float16))
-
-
-                    with tempfile.NamedTemporaryFile(suffix=".exr") as f:
-                        exr = OpenEXR.OutputFile(f.name, header)
-                        exr.writePixels(
-                            {"u":u.tobytes(),
-                            "v": v.tobytes(),
-                            "w": w.tobytes(),
-                            }
-                            )
-                        exr.close()
-                        z.write(f.name, f"{frame_idx:05d}.exr")
+            with tempfile.NamedTemporaryFile(suffix=".exr") as f:
+                exr = OpenEXR.OutputFile(f.name, header)
+                exr.writePixels({"u": u.tobytes(), "v": v.tobytes(), "w": w.tobytes()})
+                exr.close()
+                z.write(f.name, f"{src}_{dst}.exr")
 
 
 def read_depth_artifacts(zip_file_path: Path) -> Iterator[tuple[int, torch.Tensor]]:
@@ -403,7 +379,7 @@ def read_instance_phrases(instance_phrase_path: Path) -> dict[int, str]:
     return instance_phrases
 
 
-def save_artifacts(out_path: ArtifactPath, cached_final_stream: VideoStream) -> None:
+def save_artifacts(out_path: ArtifactPath, cached_final_stream: VideoStream, slam_output: SLAMOutput) -> None:
     """
     Save each attribute independently.
     """
@@ -423,7 +399,7 @@ def save_artifacts(out_path: ArtifactPath, cached_final_stream: VideoStream) -> 
     save_depth_artifacts(out_path, cached_final_stream)
 
     # Evan Ratliff - save dense flow tracks with which to match the dynamic masks with
-    save_flow_artifacts(out_path, cached_final_stream)
+    save_flow_artifacts(out_path, slam_output)
 
     # Save Instance mask as zipped PNG files.
     instance_list = [

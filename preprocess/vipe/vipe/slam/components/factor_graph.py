@@ -304,8 +304,8 @@ class FactorGraph:
                 dst = int(self.buffer.tstamp[self.jj[k]])
                 
                 # we'll only track forward flow
-                if dst-src == 1:
-                    self.buffer.dense_flow[dst] = flow_with_weight[0,k].detach().cpu()
+                if dst>src:
+                    self.buffer.dense_flow[(src,dst)] = flow_with_weight[0,k].detach().cpu()
 
             # dense bundle adjustment
             self.buffer.bundle_adjustment(
@@ -399,9 +399,10 @@ class FactorGraph:
                 src = int(self.buffer.tstamp[self.ii[k]])
                 dst = int(self.buffer.tstamp[self.jj[k]])
                 
-                # we'll only track forward flow
+                # we need per-keyframe
                 if dst>src:
-                    self.buffer.dense_flow[dst] = flow_with_weight[0,k].detach().cpu()
+                    self.buffer.dense_flow[(src,dst)] = flow_with_weight[0,k].detach().cpu()
+
 
             self.buffer.bundle_adjustment(
                 target=target,

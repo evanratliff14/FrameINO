@@ -301,7 +301,7 @@ class PanoramaAnnotationPipeline(Pipeline):
         )
 
         if self.out_cfg.save_artifacts:
-            io.save_artifacts(artifact_path, output_stream)
+            io.save_artifacts(artifact_path, output_stream, slam_output)
 
             artifact_path.meta_info_path.parent.mkdir(exist_ok=True, parents=True)
             with artifact_path.meta_info_path.open("wb") as f:
