@@ -34,7 +34,6 @@ from vipe.utils.cameras import CameraType
 from vipe.utils.logging import pbar
 from vipe.utils.misc import unpack_optional
 from vipe.utils.visualization import POINTS_STENCIL, draw_lines_batch, draw_points_batch
-from vipe.slam.components.factor_graph import coords_grid
 
 from ..ba.kernel import build_robust_kernel
 from ..ba.solver import Solver, SparseBlockVector
