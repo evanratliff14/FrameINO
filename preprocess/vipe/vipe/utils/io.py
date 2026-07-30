@@ -14,6 +14,7 @@
 # limitations under the License.
 
 from functools import cache
+import io
 import logging
 import tempfile
 import zipfile
@@ -68,8 +69,8 @@ class ArtifactPath:
         return self.base_path / "flow" / f"{self.artifact_name}.zip"
         
     @property
-    def sparse_flow_path(self) -> Path:
-        return self.base_path / "sparse_flow" / f"{self.artifact_name}.zip"
+    def sparse_tracks_path(self) -> Path:
+        return self.base_path / "sparse_tracks" / f"{self.artifact_name}.zip"
 
     @property
     def dense_flow_path(self) -> Path:
@@ -318,6 +319,33 @@ def save_flow_artifacts(out_path: ArtifactPath, slam_output: SLAMOutput):
                 z.write(f.name, f"{src}_{dst}.exr")
 
 
+def save_sparse_tracks_artifacts(out_path: ArtifactPath, slam_output: SLAMOutput) -> None:
+    """
+    Save per-frame sparse tracks as zipped NPZ files.
+
+    Each member is ``{frame_idx:05d}.npz`` with arrays:
+      - ``ids``: (N,) int32 keypoint ids
+      - ``uv``:  (N, 2) float32 pixel coordinates
+    """
+    sparse_tracks = slam_output.get_sparse_tracks()
+    if not sparse_tracks:
+        return
+
+    sparse_path = out_path.sparse_tracks_path
+    sparse_path.parent.mkdir(exist_ok=True, parents=True)
+    with zipfile.ZipFile(sparse_path, "w", zipfile.ZIP_DEFLATED) as z:
+        for frame_idx, frame_tracks in enumerate(sparse_tracks):
+            tracks = frame_tracks.detach().cpu().numpy()
+            if tracks.size == 0:
+                ids = np.empty((0,), dtype=np.int32)
+                uv = np.empty((0, 2), dtype=np.float32)
+            else:
+                ids = tracks[:, 0].astype(np.int32)
+                uv = tracks[:, 1:3].astype(np.float32)
+            with tempfile.NamedTemporaryFile(suffix=".npz") as f:
+                np.savez(f.name, ids=ids, uv=uv)
+                z.write(f.name, f"{frame_idx:05d}.npz")
+
 def read_depth_artifacts(zip_file_path: Path) -> Iterator[tuple[int, torch.Tensor]]:
     """
     Read metric depth from zipped exr files.
@@ -400,6 +428,9 @@ def save_artifacts(out_path: ArtifactPath, cached_final_stream: VideoStream, sla
 
     # Evan Ratliff - save dense flow tracks with which to match the dynamic masks with
     save_flow_artifacts(out_path, slam_output)
+
+    # Save sparse keypoint tracks (cuVSLAM / SparseTracks observations).
+    save_sparse_tracks_artifacts(out_path, slam_output)
 
     # Save Instance mask as zipped PNG files.
     instance_list = [

@@ -195,7 +195,8 @@ class SLAMOutput:
     # Should be of range [0, 1]
     ba_residual: float = 0.0
     dense_flow: dict[tuple[int, int], torch.Tensor] | None = None
-    sparse_flow: list[torch.Tensor] | None= None
+    # Per-frame sparse tracks for view 0: each tensor is (N_t, 3) with columns [kp_id, u, v].
+    sparse_tracks: list[torch.Tensor] | None = None
 
     @property
     def keyframe_ids(self) -> np.ndarray:
@@ -206,8 +207,8 @@ class SLAMOutput:
         assert self.rig is not None, "Rig not available."
         return self.trajectory * self.rig[view_idx][None]  # type: ignore
 
-    def get_sparse_flow(self) ->list[torch.Tensor] | None:
-        return self.sparse_flow
+    def get_sparse_tracks(self) -> list[torch.Tensor] | None:
+        return self.sparse_tracks
 
     def get_dense_flow(self) -> dict[tuple[int, int], torch.Tensor] | None:
         return self.dense_flow

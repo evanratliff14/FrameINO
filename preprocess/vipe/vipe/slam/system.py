@@ -330,5 +330,7 @@ class SLAMSystem:
             rig=SE3(self.buffer.rig.clone()),
             slam_map=slam_map,
             dense_flow=self.buffer.dense_flow,
-            sparse_flow=None,
+            sparse_tracks=(
+                self.sparse_tracks.export_observations(0) if self.sparse_tracks.enabled else None
+            ),
         )

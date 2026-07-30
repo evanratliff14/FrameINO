@@ -64,6 +64,26 @@ class SparseTracks(ABC):
             .float()
         )
 
+    def export_observations(self, view_idx: int = 0) -> list[torch.Tensor]:
+        """
+        Pack per-frame sparse observations into tensors of shape (N_t, 3).
+
+        Columns are [kp_id, u, v]. Empty frames yield a (0, 3) tensor.
+        """
+        packed: list[torch.Tensor] = []
+        for frame_obs in self.observations[view_idx]:
+            if not frame_obs:
+                packed.append(torch.empty(0, 3, dtype=torch.float32))
+                continue
+            kp_ids = sorted(frame_obs.keys())
+            rows = np.stack(
+                [np.array([float(kp_id), float(frame_obs[kp_id][0]), float(frame_obs[kp_id][1])], dtype=np.float32)
+                 for kp_id in kp_ids],
+                axis=0,
+            )
+            packed.append(torch.from_numpy(rows))
+        return packed
+
     def compute_dense_disp_target_weight(
         self,
         source_view_inds: torch.Tensor,
