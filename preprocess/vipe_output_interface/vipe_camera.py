@@ -13,6 +13,7 @@ import numpy as np
 from vipe_io import read_intrinsics, read_pose_c2w
 
 logger = logging.getLogger(__name__)
+import torch
 
 
 class Camera:
@@ -56,7 +57,7 @@ class Camera:
             )
         logger.info("Camera loaded %d frames from %s", self.num_frames, base_path)
 
-    def get_poses(self, indices: list[int]) -> list[np.ndarray | None]:
+    def get_c2w(self, indices: list[int]) -> list[np.ndarray | None]:
         """Return cam2world ``[4, 4]`` for each index (O(1) per index)."""
         out: list[np.ndarray | None] = []
         n = self.num_frames
@@ -67,6 +68,12 @@ class Camera:
             else:
                 out.append(self._c2w[i])
         return out
+
+    def get_c2w_to_matrix(self, indices: list[int]) -> torch.Tensor:
+        poses_list = self.get_poses(indices)
+        # stack lists using np.stack, then convert to torch
+        poses = torch.from_numpy(np.stack(poses_list, axis = 0))
+        return poses
 
     def get_intrinsics(self, indices: list[int]) -> list[np.ndarray | None]:
         """Return ``[fx, fy, cx, cy]`` for each index (O(1) per index)."""
@@ -79,3 +86,33 @@ class Camera:
             else:
                 out.append(self._intrinsics[i])
         return out
+
+    def get_intrinsics_to_matrix(self, indices: list[int]) -> torch.Tensor:
+            # intrinsics: (..., 4) -> [fx, fy, cx, cy]
+            intrinsics_list = self.get_instrinsics(indices)
+
+            intrinsics = torch.from_numpy(np.stack(intrinsics_list, axis=0))
+
+            fx, fy, cx, cy = intrinsics.unbind(-1)
+            zeros = torch.zeros_like(fx)
+            ones = torch.ones_like(fx)
+
+            K = torch.stack([
+                fx,    zeros, cx,
+                zeros, fy,    cy,
+                zeros, zeros, ones
+            ], dim=-1).reshape(*intrinsics.shape[:-1], 3, 3)
+
+            return K
+
+    def i2c(self, x, indices):
+        intrinsics = self.get_intrinsics_to_matrix(indices)
+        poses = self.get_c2w_to_matrix(indices)
+        m = torch.linalg.inverse(intrinsics)
+        return m @ x
+
+    def c2w(self, x, indices):
+        poses = self.get_c2w_to_matrix(indices)
+        # since its an orthogonal matrix, .T <-> ^-1
+        m = poses.T
+        return m @ x
