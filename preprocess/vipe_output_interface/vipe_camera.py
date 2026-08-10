@@ -70,9 +70,11 @@ class Camera:
         return out
 
     def get_c2w_to_matrix(self, indices: list[int]) -> torch.Tensor:
-        poses_list = self.get_poses(indices)
-        # stack lists using np.stack, then convert to torch
-        poses = torch.from_numpy(np.stack(poses_list, axis = 0))
+        poses_list = self.get_c2w(indices)
+        if any(p is None for p in poses_list):
+            missing = [i for i, p in zip(indices, poses_list) if p is None]
+            raise ValueError(f"Missing c2w for frame indices: {missing}")
+        poses = torch.from_numpy(np.stack(poses_list, axis=0))
         return poses
 
     def get_intrinsics(self, indices: list[int]) -> list[np.ndarray | None]:
@@ -88,24 +90,30 @@ class Camera:
         return out
 
     def get_intrinsics_to_matrix(self, indices: list[int]) -> torch.Tensor:
-            # intrinsics: (..., 4) -> [fx, fy, cx, cy]
-            intrinsics_list = self.get_instrinsics(indices)
+        # intrinsics: (..., 4) -> [fx, fy, cx, cy]
+        intrinsics_list = self.get_intrinsics(indices)
+        if any(k is None for k in intrinsics_list):
+            missing = [i for i, k in zip(indices, intrinsics_list) if k is None]
+            raise ValueError(f"Missing intrinsics for frame indices: {missing}")
 
-            intrinsics = torch.from_numpy(np.stack(intrinsics_list, axis=0))
+        intrinsics = torch.from_numpy(np.stack(intrinsics_list, axis=0))
 
-            fx, fy, cx, cy = intrinsics.unbind(-1)
-            zeros = torch.zeros_like(fx)
-            ones = torch.ones_like(fx)
+        fx, fy, cx, cy = intrinsics.unbind(-1)
+        zeros = torch.zeros_like(fx)
+        ones = torch.ones_like(fx)
 
-            K = torch.stack([
-                fx,    zeros, cx,
-                zeros, fy,    cy,
-                zeros, zeros, ones
-            ], dim=-1).reshape(*intrinsics.shape[:-1], 3, 3)
+        K = torch.stack([
+            fx,    zeros, cx,
+            zeros, fy,    cy,
+            zeros, zeros, ones
+        ], dim=-1).reshape(*intrinsics.shape[:-1], 3, 3)
 
-            return K
+        return K
 
     def i2c(self, x, indices):
+        """
+        x should be in homogenous coords
+        """
         intrinsics = self.get_intrinsics_to_matrix(indices)
         poses = self.get_c2w_to_matrix(indices)
         m = torch.linalg.inverse(intrinsics)

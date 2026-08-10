@@ -3,6 +3,29 @@
 CLI for visualizing ViPE dense / sparse optical flow.
 
 Pass only the ViPE results root; modality paths are resolved by ``vipe_io``.
+
+Run from the repo root. Prefer an explicit ``--base_path`` (real data is typically
+``preprocess/vipe/vipe_results_flow``; the script default is under this file's directory).
+
+Examples::
+
+  # Edge report (list + gap histogram)
+  python preprocess/vipe_output_interface/vipe_visualize_flow.py \\
+    --base_path preprocess/vipe/vipe_results_flow report --out /tmp/flow_edges.txt
+
+  # OpenCV arrow viewer (src-centered edges)
+  python preprocess/vipe_output_interface/vipe_visualize_flow.py \\
+    --base_path preprocess/vipe/vipe_results_flow show
+  python preprocess/vipe_output_interface/vipe_visualize_flow.py \\
+    --base_path preprocess/vipe/vipe_results_flow show --thresh 0.1 --stride 4 --wait_ms 0
+  python preprocess/vipe_output_interface/vipe_visualize_flow.py \\
+    --base_path preprocess/vipe/vipe_results_flow show --sparse
+
+  # Full-res [T,H,W,2] tensor stats / optional save
+  python preprocess/vipe_output_interface/vipe_visualize_flow.py \\
+    --base_path preprocess/vipe/vipe_results_flow tensor
+  python preprocess/vipe_output_interface/vipe_visualize_flow.py \\
+    --base_path preprocess/vipe/vipe_results_flow tensor --thresh 0.1 --out /tmp/flow.pt
 """
 
 from __future__ import annotations

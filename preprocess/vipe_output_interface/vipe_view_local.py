@@ -6,9 +6,11 @@ Standalone: does NOT import the ``vipe`` package (no CUDA extensions).
 Uses Torch on Apple MPS when available, otherwise CPU — never CUDA.
 
 Example:
-  python preprocess/vipe_view_local.py \\
+  python preprocess/vipe_output_interface/vipe_view_local.py \\
     --base_path preprocess/vipe/vipe_results_flow \\
     --port 20540
+
+    python preprocess/vipe_output_interface/vipe_view_local.py --base_path preprocess/vipe/vipe_results_flow --port 20540
 """
 
 from __future__ import annotations
@@ -32,7 +34,7 @@ from vipe_camera import Camera
 from vipe_depth import VipeDepth
 from vipe_dense_flow import FLOW_RES_SCALE, DenseFlow
 from vipe_io import modality_exists, read_rgb_frames
-from vipe_masks import VipeMasks
+from vipe_masks import InstanceMask, VipeMasks
 from vipe_optical_flow import FlowResult, flow_arrows_for_src
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -143,6 +145,34 @@ def blend_entity_colors(
     return colors
 
 
+def _points_in_selected_instances(
+    u: np.ndarray,
+    v: np.ndarray,
+    instances: list[InstanceMask],
+    selected_ids: set[int],
+) -> np.ndarray:
+    """OR membership across selected ``InstanceMask``s at pixel coords ``(u, v)``."""
+    keep = np.zeros((len(u),), dtype=bool)
+    for im in instances:
+        if im.instance_id in selected_ids:
+            keep |= im.contains_uv(u, v)
+    return keep
+
+
+def id_map_from_instances(
+    instances: list[InstanceMask] | None,
+    height: int,
+    width: int,
+) -> np.ndarray | None:
+    """Compose a packed uint8 id map from per-instance binary masks."""
+    if not instances:
+        return None
+    out = np.zeros((height, width), dtype=np.uint8)
+    for im in instances:
+        out[im.mask] = np.uint8(im.instance_id)
+    return out
+
+
 def unproject_uv_depth_world(
     uv_xy: np.ndarray,
     depth_hw: np.ndarray,
@@ -188,8 +218,6 @@ def flow_segments_world(
     Returns ``{src: segments}`` where ``segments`` is float32 ``[M, 2, 3]``.
     """
     out: dict[int, np.ndarray] = {}
-    h = depth.height or masks.height
-    w = depth.width or masks.width
 
     for edge in flow_result.edges:
         src, dst = int(edge.src), int(edge.dst)
@@ -202,13 +230,15 @@ def flow_segments_world(
             continue
 
         if require_src_mask:
-            src_mask = masks.get_masks([src])[0]
-            if src_mask is None or not selected_entity_ids:
+            src_instances = masks.get_masks([src])[0]
+            if not src_instances or not selected_entity_ids:
                 continue
-            u = np.clip(np.rint(src_xy[:, 0]), 0, w - 1).astype(np.int64)
-            v = np.clip(np.rint(src_xy[:, 1]), 0, h - 1).astype(np.int64)
-            ids_at_src = src_mask[v, u]
-            keep = np.isin(ids_at_src, list(selected_entity_ids))
+            keep = _points_in_selected_instances(
+                src_xy[:, 0],
+                src_xy[:, 1],
+                src_instances,
+                selected_entity_ids,
+            )
             src_xy = src_xy[keep]
             dst_xy = dst_xy[keep]
             if src_xy.shape[0] == 0:
@@ -218,7 +248,7 @@ def flow_segments_world(
         if src_depth is None or dst_depth is None:
             continue
 
-        pose_s, pose_d = camera.get_poses([src, dst])
+        pose_s, pose_d = camera.get_c2w([src, dst])
         intr_s, intr_d = camera.get_intrinsics([src, dst])
         if pose_s is None or pose_d is None or intr_s is None or intr_d is None:
             continue
@@ -502,12 +532,14 @@ class ClientClosures:
             self.gui_entities_handle = None
         self.gui_entity_checks = {}
 
-        self.instance_phrases = dict(bundle.masks.phrases)
+        self.instance_phrases = {
+            eid: bundle.masks.phrase_for(eid) for eid in bundle.masks.instance_ids
+        }
         if not self.instance_phrases or bundle.masks.num_frames == 0:
             logger.warning("No instance masks/phrases under %s; skipping Entities GUI.", bundle.base_path)
             return
 
-        entity_ids = sorted(eid for eid, name in self.instance_phrases.items() if eid > 0)
+        entity_ids = list(bundle.masks.instance_ids)
         if not entity_ids:
             return
 
@@ -610,11 +642,12 @@ class ClientClosures:
 
             rgb = bundle.rgb[frame_idx] if frame_idx < len(bundle.rgb) else None
             depth = bundle.depth.get_depth([frame_idx])[0]
-            inst_mask = bundle.masks.get_masks([frame_idx])[0]
+            instances = bundle.masks.get_masks([frame_idx])[0]
+            inst_mask = id_map_from_instances(instances, bundle.height, bundle.width)
             if rgb is None and depth is None:
                 continue
 
-            c2w = bundle.camera.get_poses([frame_idx])[0]
+            c2w = bundle.camera.get_c2w([frame_idx])[0]
             intr = bundle.camera.get_intrinsics([frame_idx])[0]
             if c2w is None or intr is None:
                 continue

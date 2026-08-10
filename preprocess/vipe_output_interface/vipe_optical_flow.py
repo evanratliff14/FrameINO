@@ -36,6 +36,27 @@ class FlowResult:
         """Map ``src -> FlowObject`` (last wins if duplicates)."""
         return {e.src: e for e in self.edges}
 
+    def by_dst(self) -> dict[int, FlowObject]:
+        """Map ``src -> FlowObject`` (last wins if duplicates)."""
+        return {e.dst: e for e in self.edges}
+
+    def get_edge_indices(self) ->list[tuple()]:
+        return [(edge.src, edge.dst) for edge in self.edges ]
+
+    def get_srcs(self):
+        return [edge.src for edge in self.edges]
+
+    def get_dsts(self):
+        return [edge.dst for edge in self.edges]
+
+    def is_oneshot(self):
+        if len(set(self.get_srcs())) ==1:
+            return True
+        else:
+            return False
+
+
+
 
 def flow_arrows_for_src(
     flow_hw3: np.ndarray,
@@ -95,39 +116,3 @@ def merge_flow_results(*results: FlowResult) -> FlowResult:
         edges.extend(result.edges)
     return FlowResult(edges=edges)
 
-
-def kabsch_umeyama(
-    P: np.ndarray,
-    Q: np.ndarray,
-    estimate_scale: bool = False,
-) -> tuple[np.ndarray, np.ndarray, float]:
-    """
-    Find R, t (and optionally scale s) such that Q ≈ s * R @ P + t.
-
-    P, Q: (n, m) corresponding points. Returns R (m,m), t (m,), s (float).
-    """
-    P = np.asarray(P, dtype=float)
-    Q = np.asarray(Q, dtype=float)
-    assert P.shape == Q.shape
-    n, m = P.shape
-
-    p_mean = P.mean(axis=0)
-    q_mean = Q.mean(axis=0)
-    X = P - p_mean
-    Y = Q - q_mean
-
-    H = X.T @ Y
-    U, S, Vt = np.linalg.svd(H)
-
-    d = np.sign(np.linalg.det(Vt.T @ U.T))
-    D = np.eye(m)
-    D[-1, -1] = d
-    R = Vt.T @ D @ U.T
-
-    if estimate_scale:
-        var_X = (X ** 2).sum() / n
-        s = float((S * np.diag(D)).sum() / var_X)
-    else:
-        s = 1.0
-    t = q_mean - s * R @ p_mean
-    return R, t, s
