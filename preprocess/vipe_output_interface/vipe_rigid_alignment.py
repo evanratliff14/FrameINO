@@ -1,9 +1,7 @@
-
 """
 High-level file for helper functions that executes rigid alignment on top of object types
 """
 from __future__ import annotations
-from gettext import npgettext
 
 from vipe_optical_flow import FlowObject, FlowResult, flow_arrows_for_src, merge_flow_results
 from vipe_depth import VipeDepth
@@ -16,7 +14,7 @@ def kabsch_umeyama(
     P: np.ndarray,
     Q: np.ndarray,
     estimate_scale: bool = False,
-    p_mean = None
+    p_mean=None,
 ) -> tuple[np.ndarray, np.ndarray, float]:
     """
     Find R, t (and optionally scale s) such that Q ≈ s * R @ P + t.
@@ -27,7 +25,7 @@ def kabsch_umeyama(
     Q = np.asarray(Q, dtype=float)
     assert P.shape == Q.shape
     n, m = P.shape
-    
+
     if p_mean == None:
         p_mean = P.mean(axis=0)
     q_mean = Q.mean(axis=0)
@@ -50,40 +48,44 @@ def kabsch_umeyama(
     t = q_mean - s * R @ p_mean
     return R, t, s, p_mean
 
-def get_points_and_indices(mask: InstanceMask,
-            flow: FlowResult, 
-            indices: list[int] | None
-            ):
+
+def get_points(
+    mask: InstanceMask,
+    flow: FlowResult,
+    indices: list[int] | None,
+):
     """
     Function to load all points T, H,W, C=(du, dv, w, u,v) per instance based on the relevant indices of optical flow
     """
 
-
     # if all sources are the same, we know that oneshot is True
     oneshot = flow.is_oneshot()
 
-    flow_dict = flow.by_dst() if oneshot else flow.by_src() # build a dict of index: flowobject
-    
-   
-    # T, H, W, C
-    flow_mat = np.stack(flow_dict[indices], axis = 0)
-    # instance-wise mask. T, H, W, 1
-    flow_mat =  flow_mat * mask
+    flow_dict = flow.by_dst() if oneshot else flow.by_src()  # build a dict of index: flowobject
 
-    height, width, _ = flow_mat.size()
+    # T, H, W, C — stack flow edges for absolute frame indices
+    flow_mat = np.stack([flow_dict[i].tensor for i in indices], axis=0)
+    # instance-wise mask. T, H, W, 1  (full-video [N,H,W] InstanceMask, sliced to indices)
+    mask_t = mask.as_float()[np.asarray(indices, dtype=np.int64)][..., None]
+    flow_mat = flow_mat * mask_t
+
+    _, height, width, _ = flow_mat.shape
     u = np.arange(width)
     v = np.arange(height)
     # indexing='uv' -> u varies along columns, v varies along rows -  we'll make u and v channel
-    v_grid, u_grid = np.meshgrid(v, u, indexing='ij')  # both (H, W)
+    v_grid, u_grid = np.meshgrid(v, u, indexing="ij")  # both (H, W)
 
-    # we need explicit u, v 
-    points_with_uv = np.cat([
-        flow_mat,
-        u_grid.unsqueeze(-1),  # (H, W, 1) - do we need the N dimension here
-        v_grid.unsqueeze(-1),  # (H, W, 1)
-    ], dim=-1)  # (T, H, W, 5) -> du, dv, w, u, v
+    # we need explicit u, v
+    points_with_uv = np.concatenate(
+        [
+            flow_mat,
+            np.broadcast_to(u_grid[None, ..., None], (*flow_mat.shape[:3], 1)).astype(np.float32),
+            np.broadcast_to(v_grid[None, ..., None], (*flow_mat.shape[:3], 1)).astype(np.float32),
+        ],
+        axis=-1,
+    )  # (T, H, W, 5) -> du, dv, w, u, v
 
-    #returns points with flow. if oneshot, then all these points will be at the same u,v
+    # returns points with flow. if oneshot, then all these points will be at the same u,v
     t0_points = None
     dst_points = None
     if oneshot:
@@ -93,38 +95,40 @@ def get_points_and_indices(mask: InstanceMask,
         t0_points[:, :, 0:3] = 0
 
         dst_points = points_with_uv
-        dst_points[:, :, :,3] += dst_points[:, :, :, 0]
-        dst_points[:, :, :,4] += dst_points[:, :, :, 1]
+        dst_points[:, :, :, 3] += dst_points[:, :, :, 0]
+        dst_points[:, :, :, 4] += dst_points[:, :, :, 1]
     else:
         raise NotImplementedError()
     # stack along the T axis
-    return np.stack((t0_points, dst_points), axis = 0), indices
+    return np.concatenate([t0_points[None, ...], dst_points], axis=0)
+
 
 def get_points_with_depth(
     depth: VipeDepth,
     # should be shape T, N, C=5 (du, dv, w, u,v)
     points: np.ndarray,
-    indices: list[int]
-    ):
+    indices: list[int],
+):
     """
     Take T, N, C, where C has the last two dimensions as (u, v) to T, N, C+1, where the last three dimensions will be (u,v,Z)
     """
     # points: (T, N, C=5) -> channels are du, dv, w, u, v
-    depths = depth.get_depth(indices)   # (T, H, W) presumably, full-res, where at T, H, W position is the z coord
+    depths = depth.get_depth(indices)  # list of [H, W]; stack to (T, H, W)
+    depths = np.stack([np.asarray(d, dtype=np.float32) for d in depths], axis=0)
 
     T, N, C = points.shape
 
-    u = points[:, :, -2]   # (T, N)
-    v = points[:, :, -1]   # (T, N)
+    u = points[:, :, -2]  # (T, N)
+    v = points[:, :, -1]  # (T, N)
 
     # pixel coords should be int for indexing, we round to the nearest pixel
     u_idx = np.round(u).astype(np.int64)
     v_idx = np.round(v).astype(np.int64)
 
     # build a T index array that matches shape (T, N), so each row t only pulls from depths[t]
-    t_idx = np.arange(T)[:, None]                 # (T, 1) -> broadcasts to (T, N)
+    t_idx = np.arange(T)[:, None]  # (T, 1) -> broadcasts to (T, N)
 
-    z = depths[t_idx, v_idx, u_idx]                # (T, N), gathered Z values
+    z = depths[t_idx, v_idx, u_idx]  # (T, N), gathered Z values
 
     # get z to the same shape with this syntax
     points_with_depth = np.concatenate([points, z[:, :, None]], axis=-1)  # (T, N, 6)
@@ -136,26 +140,17 @@ def points_i2c(
     # shape T, N, C=3 (U, V, Z)
     points_i: np.ndarray,
     indices: list[int],
-    camera: Camera
-    ):
+    camera: Camera,
+):
     # input homogenous coords (we already have them)
-    points_c = camera.i2c(x=points_i, indices = indices)
+    points_c = camera.i2c(x=points_i, indices=indices)
     return points_c
 
 
 def points_c2w(
     points_c: np.ndarray,
     indices: list[int],
-    camera: Camera
-    ):
-    points_w = camera.c2w(x=points_c, indices = indices)
+    camera: Camera,
+):
+    points_w = camera.c2w(x=points_c, indices=indices)
     return points_w
-
-
-
-    # TODO: use function to do Camera. i2c, then multiply by the depeth, then Camera.c2w
-
-        
-
-
-

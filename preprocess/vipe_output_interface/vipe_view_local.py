@@ -34,7 +34,7 @@ from vipe_camera import Camera
 from vipe_depth import VipeDepth
 from vipe_dense_flow import FLOW_RES_SCALE, DenseFlow
 from vipe_io import modality_exists, read_rgb_frames
-from vipe_masks import InstanceMask, VipeMasks
+from vipe_masks import VipeMasks
 from vipe_optical_flow import FlowResult, flow_arrows_for_src
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -145,34 +145,6 @@ def blend_entity_colors(
     return colors
 
 
-def _points_in_selected_instances(
-    u: np.ndarray,
-    v: np.ndarray,
-    instances: list[InstanceMask],
-    selected_ids: set[int],
-) -> np.ndarray:
-    """OR membership across selected ``InstanceMask``s at pixel coords ``(u, v)``."""
-    keep = np.zeros((len(u),), dtype=bool)
-    for im in instances:
-        if im.instance_id in selected_ids:
-            keep |= im.contains_uv(u, v)
-    return keep
-
-
-def id_map_from_instances(
-    instances: list[InstanceMask] | None,
-    height: int,
-    width: int,
-) -> np.ndarray | None:
-    """Compose a packed uint8 id map from per-instance binary masks."""
-    if not instances:
-        return None
-    out = np.zeros((height, width), dtype=np.uint8)
-    for im in instances:
-        out[im.mask] = np.uint8(im.instance_id)
-    return out
-
-
 def unproject_uv_depth_world(
     uv_xy: np.ndarray,
     depth_hw: np.ndarray,
@@ -230,15 +202,12 @@ def flow_segments_world(
             continue
 
         if require_src_mask:
-            src_instances = masks.get_masks([src])[0]
-            if not src_instances or not selected_entity_ids:
+            if not selected_entity_ids:
                 continue
-            keep = _points_in_selected_instances(
-                src_xy[:, 0],
-                src_xy[:, 1],
-                src_instances,
-                selected_entity_ids,
-            )
+            ids = masks.ids_at(src, src_xy[:, 0], src_xy[:, 1])
+            if ids is None:
+                continue
+            keep = np.isin(ids.astype(np.int64), list(selected_entity_ids))
             src_xy = src_xy[keep]
             dst_xy = dst_xy[keep]
             if src_xy.shape[0] == 0:
@@ -642,8 +611,7 @@ class ClientClosures:
 
             rgb = bundle.rgb[frame_idx] if frame_idx < len(bundle.rgb) else None
             depth = bundle.depth.get_depth([frame_idx])[0]
-            instances = bundle.masks.get_masks([frame_idx])[0]
-            inst_mask = id_map_from_instances(instances, bundle.height, bundle.width)
+            inst_mask = bundle.masks.get_id_map([frame_idx])[0]
             if rgb is None and depth is None:
                 continue
 

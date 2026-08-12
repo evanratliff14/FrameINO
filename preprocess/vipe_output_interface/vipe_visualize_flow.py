@@ -113,7 +113,7 @@ def _flow_to_bgr_preview(
 
 def visualize_flow_video(
     base_path: Path,
-    certainty_thresh: float = 0.1,
+    certainty_thresh: float = 0.0,
     arrow_stride: int = 2,
     wait_ms: int = 50,
     *,
@@ -224,11 +224,11 @@ def main() -> int:
     p_show = sub.add_parser("show", help="OpenCV popup of src-centered flow arrows.")
     p_show.add_argument("--thresh", type=float, default=0.0, help="Certainty threshold on channel w")
     p_show.add_argument("--stride", type=int, default=2, help="Arrow grid stride")
-    p_show.add_argument("--wait_ms", type=int, default=50, help="cv2.waitKey delay (0 = keypress)")
+    p_show.add_argument("--wait_ms", type=int, default=1000, help="cv2.waitKey delay (0 = keypress)")
     p_show.add_argument("--sparse", action="store_true", help="Prefer sparse tracks if available")
 
     p_tensor = sub.add_parser("tensor", help="Build [T,H,W,2] src-indexed full-res flow and print stats.")
-    p_tensor.add_argument("--thresh", type=float, default=0.1)
+    p_tensor.add_argument("--thresh", type=float, default=0.0)
     p_tensor.add_argument("--out", type=Path, default=None, help="Optional .pt save path")
 
     args = parser.parse_args()

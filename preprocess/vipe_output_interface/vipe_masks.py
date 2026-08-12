@@ -3,7 +3,7 @@
 Instance-mask loader for one ViPE results video.
 
 Packed per-frame id maps are kept in memory; callers receive
-``InstanceMask`` objects (id + phrase + boolean ndarray).
+``InstanceMask`` objects (id + phrase + boolean ``[N, H, W]``).
 """
 
 from __future__ import annotations
@@ -21,30 +21,45 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class InstanceMask:
-    """Binary mask for one tracked instance in a single frame."""
+    """Binary mask for one tracked instance spanning the full video."""
 
     instance_id: int
     phrase: str
-    mask: np.ndarray  # bool [H, W]
+    mask: np.ndarray  # bool [N, H, W]
 
     def __post_init__(self) -> None:
         self.instance_id = int(self.instance_id)
         self.phrase = str(self.phrase)
         self.mask = np.asarray(self.mask, dtype=bool)
-        if self.mask.ndim != 2:
-            raise ValueError(f"InstanceMask.mask must be 2D [H, W], got shape {self.mask.shape}")
+        if self.mask.ndim != 3:
+            raise ValueError(
+                f"InstanceMask.mask must be 3D [N, H, W], got shape {self.mask.shape}"
+            )
 
     @property
     def height(self) -> int:
-        return int(self.mask.shape[0])
+        return int(self.mask.shape[1])
 
     @property
     def width(self) -> int:
-        return int(self.mask.shape[1])
+        return int(self.mask.shape[2])
+
+    @property
+    def frames(self) -> int:
+        return int(self.mask.shape[0])
 
     @property
     def area(self) -> int:
         return int(self.mask.sum())
+
+    def at(self, frame_idx: int) -> np.ndarray:
+        """Return the 2D ``[H, W]`` plane for absolute video frame ``frame_idx``."""
+        t = int(frame_idx)
+        if t < 0 or t >= self.frames:
+            raise IndexError(
+                f"frame_idx {t} out of range for InstanceMask with N={self.frames}"
+            )
+        return self.mask[t]
 
     def as_uint8(self) -> np.ndarray:
         """``0/1`` uint8 copy of the mask (handy for packing / I/O)."""
@@ -54,11 +69,17 @@ class InstanceMask:
         """``0/1`` float32 copy — suitable for multiplying with flow tensors."""
         return self.mask.astype(np.float32)
 
-    def contains_uv(self, u: np.ndarray, v: np.ndarray) -> np.ndarray:
-        """Boolean membership for pixel coords ``(u=x, v=y)`` (clipped to bounds)."""
+    def contains_uv(
+        self,
+        u: np.ndarray,
+        v: np.ndarray,
+        frame_idx: int = 0,
+    ) -> np.ndarray:
+        """Boolean membership for pixel coords ``(u=x, v=y)`` on frame ``frame_idx``."""
+        plane = self.at(frame_idx)
         uu = np.clip(np.rint(u), 0, self.width - 1).astype(np.int64)
         vv = np.clip(np.rint(v), 0, self.height - 1).astype(np.int64)
-        return self.mask[vv, uu]
+        return plane[vv, uu]
 
 
 class VipeMasks:
@@ -118,7 +139,9 @@ class VipeMasks:
 
         if modality_exists(base_path, "mask", "*.txt"):
             try:
-                self.phrases = {int(k): str(v) for k, v in read_instance_phrases(base_path).items()}
+                self.phrases = {
+                    int(k): str(v) for k, v in read_instance_phrases(base_path).items()
+                }
             except Exception as exc:
                 logger.warning("Failed to read instance phrases: %s", exc)
                 self.phrases = {}
@@ -147,44 +170,17 @@ class VipeMasks:
                 out.append(self._id_maps[i])
         return out
 
-    def get_masks(self, indices: list[int]) -> list[list[InstanceMask] | None]:
-        """
-        Return per-frame lists of ``InstanceMask`` objects for ``indices``.
+    def get_masks(self) -> list[InstanceMask]:
+        """Return one video-spanning ``InstanceMask`` (``[N, H, W]``) per known id."""
+        return [self._build_instance_mask(iid) for iid in self.instance_ids]
 
-        ``None`` means that frame has no id map; an empty list means the map
-        exists but contains no non-zero instance ids.
-        """
-        out: list[list[InstanceMask] | None] = []
-        for id_map in self.get_id_map(indices):
-            if id_map is None:
-                out.append(None)
-            else:
-                out.append(self._instances_from_id_map(id_map))
-        return out
+    def all_instances(self) -> list[InstanceMask]:
+        """Alias for ``get_masks()``."""
+        return self.get_masks()
 
-    def get_instance(
-        self,
-        instance_id: int,
-        indices: list[int],
-    ) -> list[InstanceMask | None]:
-        """
-        Return one instance's binary mask across ``indices``.
-
-        ``None`` if the frame is missing or that id is absent in the frame.
-        """
-        iid = int(instance_id)
-        phrase = self.phrase_for(iid)
-        out: list[InstanceMask | None] = []
-        for id_map in self.get_id_map(indices):
-            if id_map is None:
-                out.append(None)
-                continue
-            binary = id_map == iid
-            if not np.any(binary):
-                out.append(None)
-            else:
-                out.append(InstanceMask(instance_id=iid, phrase=phrase, mask=binary))
-        return out
+    def get_instance(self, instance_id: int) -> InstanceMask:
+        """Return one instance's binary mask over the full video ``[N, H, W]``."""
+        return self._build_instance_mask(int(instance_id))
 
     def ids_at(
         self,
@@ -202,18 +198,21 @@ class VipeMasks:
         vv = np.clip(np.rint(v), 0, h - 1).astype(np.int64)
         return id_map[vv, uu]
 
-    def _instances_from_id_map(self, id_map: np.ndarray) -> list[InstanceMask]:
-        out: list[InstanceMask] = []
-        for iid in np.unique(id_map):
-            iid_i = int(iid)
-            if iid_i <= 0:
-                continue
-            out.append(
-                InstanceMask(
-                    instance_id=iid_i,
-                    phrase=self.phrase_for(iid_i),
-                    mask=(id_map == iid_i),
-                )
-            )
-        out.sort(key=lambda m: m.instance_id)
-        return out
+    def _build_instance_mask(self, instance_id: int) -> InstanceMask:
+        """Stack ``(id_map == iid)`` over all frames into ``[N, H, W]`` (False if missing)."""
+        iid = int(instance_id)
+        n = self.num_frames
+        h, w = int(self.height), int(self.width)
+        if n == 0 or h <= 0 or w <= 0:
+            planes = np.zeros((0, max(h, 0), max(w, 0)), dtype=bool)
+        else:
+            planes = np.zeros((n, h, w), dtype=bool)
+            for t, id_map in enumerate(self._id_maps):
+                if id_map is None:
+                    continue
+                planes[t] = id_map == iid
+        return InstanceMask(
+            instance_id=iid,
+            phrase=self.phrase_for(iid),
+            mask=planes,
+        )

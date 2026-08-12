@@ -90,9 +90,8 @@ def flow_arrows_for_src(
     keep = (
         np.isfinite(u)
         & np.isfinite(v)
-        & np.isfinite(cert)
         & (cert >= float(certainty_thresh))
-        & (cert > 0)
+        & (((np.pow(u, 2) + np.pow(v, 2) > 1)))
     )
     if not np.any(keep):
         empty = np.zeros((0, 2), dtype=np.float32)
