@@ -27,7 +27,7 @@ def track_objects_with_cotracker(
     ):
 
     # we store a dict of frame: rot
-    result = {id: np.ndarray() for id in masks.keys()}
+    result = {id: {} for id in masks.keys()}
 
     masks = masks[start_frame:end_frame, :, :]
     if track_keyframes:
@@ -39,6 +39,10 @@ def track_objects_with_cotracker(
         for id, mask in enumerate(masks):
             # sum along H, W -> T
             counts = np.sum(mask, axis = [1, 2])
+            # boundary_mask = np.zeros_like(mask, dtype=bool)
+            # boundary_mask[:, 0, :] = boundary_mask[:, -1, :] = boundary_mask[:, :, 0] = boundary_mask[:, :, -1] = 1
+            # boundary_count = np.sum(boundary_mask * masks, axis = [1,2])
+            
             not_in_frame = False
             in_frame = False
 
@@ -62,7 +66,7 @@ def track_objects_with_cotracker(
                     else:
                         in_frame = False
 
-                # not_in_frame measures if it has been out of frame, in_frame measures the 
+                # not_in_frame measures if it has previuosly been out of frame, in_frame measures the current status
                 if not_in_frame and in_frame:
                     not_in_frame = False
                     keyframes.add(i)
@@ -79,13 +83,13 @@ def track_objects_with_cotracker(
                 # we want to minimize the number of keyframes while maintaining that keyframes cannot be within 16 frames of one another 
                 # in 16 frames, cotracker will do inference on 3 sliding windows of size 8 step size 4
                 if keyframes[i] - keyframes[i-1] <16:
-                    keyframes.pop(i)
+                    del keyframes[i]
 
     else:
         keyframes = [start_frame, end_frame]
 
 
-    for j, keyframe in enumerate(keyframes):
+    for keyframe in keyframes[:-1]:
 
         
         # come in as T, H, W
@@ -117,7 +121,8 @@ def track_objects_with_cotracker(
             stop = keyframes[i+1]
         else:
             stop = end_frame
-        point_tracks, point_visibility = get_point_tracks(video=video, queries = queries, start_frame=keyframe, end_frame = stop)
+
+        point_tracks, point_visibility, indices = get_point_tracks(video=video, queries = queries, start_frame=keyframe, end_frame = stop)
         # (B, T, N, 2), (B, T, N, 2), (B, T, N, 1)
         correspondences = torch.cat([queries, point_tracks, point_visibility], axis = 3)
         # del the batch dim
@@ -126,35 +131,64 @@ def track_objects_with_cotracker(
 
         # since points return from get_point_tracks in original order of id, we can reconstruct which point belong where without an extra DS
         correspondences = torch.reshape(T, points_per_instance, num_instances0, X)
+        correspondences = correspondences.numpy().cpu()
 
         # mask = correspondences[..., 4] >= 0.5
         # zero out entries where false
         # correspondences = correspondences * mask[..., None]
 
-        # next: have a arg for doing umeyama vs. runtime and returning vs. just dumping the point tracks as npzs. 
-        for i in range(correspondences.size(3)):
+        # we can use threadpoolexecturor across different instances
+        for i in range(correspondences.size(2)):
             instance_tracks = correspondences[:, :, i, :]
 
-            src = instance_tracks[:, :, :, 0:2]
-            dst= instance_tracks[:, :, :, 0:2]
-            id = ids[i]
-            # if this is the first instance of it, we'll say its rotation is I and translation is its world coordinates mean
-            if results[ids[i]].empty():
-                src_with_depth = get_points_with_depth(depth=depths, points = src, indices = [start_frame])
-                src_W = points_c2w(points_i2c(src_with_depth))
-                # src_W is T, N, C=3
-                centroid = torch.mean(src_W, axis = 2)
+            src = instance_tracks[0, :, i, 0:2]
+            src_frame = src[0, 0]
+            confidence = instance_tracks[0, :, i, 4]
+
+            # note that we are calculating rotation from the keyframe of entry or 0, not necessarily where SAM3D does inference
+            src_with_depth = get_points_with_depth(depth=depths, points = src, indices = [start_frame])
+            src_W = points_c2w(points_i2c(src_with_depth))
+            # src_W is T, N, C=3
+            centroid = torch.mean(src_W, axis = 2)
+
+            # we must apply this transformation to the Umeyama-Kabsch-acquired T to get the full transformation
+            src_Rt = np.eye(4, 4)
+
+            if results[id].empty():
                 Rt = [
                     [1, 0, 0, centroid[0]],
                     [0, 1, 0, centroid[1]],
-                    [0, 0, 1, centroid[2]]
+                    [0, 0, 1, centroid[2]],
+                    [0, 0, 0, 1          ]
                     ]
-            if 
-                
-                # if this is a keyframe (we lost some tracks ), we would need a way to reset our pointer to a certain track to denote that it is the anchor
-                # then add the umeyama calculation
+                results[id][src_frame] = Rt
+            else:
+                src_Rt = results[id][max(results[id].keys())]
 
-                # add the track
+            dsts= instance_tracks[1:, :, i, :]
+            id = ids[i]
+            p_mean = None
+
+            for j in range(size(instance_tracks.size(0))):
+                # if this is the first instance of it, we'll say its rotation is I and translation is its world coordinates mean
+                    
+                dst = instance_tracks[j, :, i, :]
+                t= indices[j]
+                dst_with_depth = get_points_with_depth(depth=depths, points = dst, indices = [t])
+                dst_W = points_c2w(points_i2c(dst_with_depth))
+                R, t, s, p_mean = kabsch_umeyama(
+                    P=src, Q=points[i, :, :], estimate_scale=False, p_mean=p_mean
+                )
+
+                Rt = np.concatenate([R, t[:, None]], axis=1)
+                bottom_row = np.array([[0.0, 0.0, 0.0, 1.0]])  # (1, 4)
+                Rt = np.concatenate([Rt, bottom_row], axis=0)
+                Rt_result = np.concatenate([Rt_result, Rt[None, ...]], axis=0)
+
+                # apply the transformation from the last keyframe
+                Rt_result = src_Rt @ Rt_result
+
+                resultss[i][j] = Rt_result
                 
     return results
 

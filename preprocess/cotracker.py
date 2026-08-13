@@ -29,13 +29,14 @@ def get_point_tracks(
 
     # Process the video
     pred_tracks, pred_visibility = np.ndarray(), np.ndarray()
+    indices = [start_frame]
     for ind in range(start_frame, end_frame - cotracker.step, cotracker.step):
         # 1 piece of  sliding window where every window is 2x the length of the jump
         pred_tracks, pred_visibility = cotracker(
             video_chunk=video[:, ind : ind + cotracker.step * 2]
         )  # B T N 2,  B T N 1
+        indices.append(ind + cotracker.step * 2)
 
         
-
     # cotracker api returns results from 0-n 
-    return pred_tracks, pred_visibility
+    return pred_tracks, pred_visibility, indices
