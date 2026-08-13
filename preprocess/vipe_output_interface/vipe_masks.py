@@ -172,7 +172,7 @@ class VipeMasks:
 
     def get_masks(self) -> list[InstanceMask]:
         """Return one video-spanning ``InstanceMask`` (``[N, H, W]``) per known id."""
-        return [self._build_instance_mask(iid) for iid in self.instance_ids]
+        return {iid: self._build_instance_mask(iid) for iid in self.instance_ids}
 
     def all_instances(self) -> list[InstanceMask]:
         """Alias for ``get_masks()``."""

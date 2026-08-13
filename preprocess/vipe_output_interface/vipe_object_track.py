@@ -7,13 +7,160 @@ from vipe_dense_flow import DenseFlow
 from vipe_rigid_alignment import kabsch_umeyama, get_points, get_points_with_depth, points_i2c, points_c2w
 from vipe_display_rigid_alignment import display_rigid_alignment
 from vipe_io import read_rgb_frames
-from SAM3D.sam_3d import reconstruct
+from preprocess.SAM3D.sam_3d import reconstruct
+from preprocess.cotracker import get_point_tracks
 import trimesh
 import argparse
 from pathlib import Path
 
+def track_objects_with_cotracker(
+        video: torch.tensor,
+        # we'll assume some masks appear in start_frame and some don't - we'll leave that up to selection
+        masks: dict[int: InstanceMask],
+        camera: Camera,
+        depths: VipeDepth,
+        end_frame: int,
+        start_frame: int = 0,
+        num_tracks = 5000,
+        track_keyframes = True
 
-def track_object(
+    ):
+
+    # we store a dict of frame: rot
+    result = {id: np.ndarray() for id in masks.keys()}
+
+    masks = masks[start_frame:end_frame, :, :]
+    if track_keyframes:
+        keyframes = set()
+
+        # we're going to measure num pixels shown, as well as ground samplel distance squared (Z/f)^2
+        # this measures the amount of metric infromation being projected on our image plane (units m^2 / pixel = px*py), assuming pinhole cam
+        candidates = {}
+        for id, mask in enumerate(masks):
+            # sum along H, W -> T
+            counts = np.sum(mask, axis = [1, 2])
+            not_in_frame = False
+            in_frame = False
+
+            candidate = False
+
+            # thresholding algorithm to measure frame - in keyframes
+            for i in range(counts.size(0)):
+                # we will end up tracking more points on sequences with better resolution  - this seems appropriate, rather than relying on sub-pixel precision
+                if counts[i] <50:
+                    not_in_frame = True
+                elif counts[i] >=200:
+                    depth_i = depths.get_depth(i)
+                    depths_i_mask = depth_i * mask
+                    avg_Z = np.mean(depths_i_mask[depths_i_mask[:, :] > 0.0], axis =0)
+                    intrinsics = camera.get_intrinsics(i)
+                    f = np.mean(intrinsics[0:2], axis=0)
+                    ground_sample_dist_squared = counts[i]*np.pow(Z/f, 2)
+                    # heuristic 0.25cm^2 per pixel and less than 40 near-meter units away
+                    if ground_sample_dist_squared >2.5e-5 and avg_Z <=40:
+                        in_frame = candidate = True
+                    else:
+                        in_frame = False
+
+                # not_in_frame measures if it has been out of frame, in_frame measures the 
+                if not_in_frame and in_frame:
+                    not_in_frame = False
+                    keyframes.add(i)
+            
+
+            if not candidate:
+                del masks[id]
+
+        keyframes.add(start_frame)
+        keyframes = sorted(list(keyframes))
+        # lazy iteration does not mess up indexing when progressing from left
+        for i, keyframe in enumerate(keyframes):
+            if i>0:
+                # we want to minimize the number of keyframes while maintaining that keyframes cannot be within 16 frames of one another 
+                # in 16 frames, cotracker will do inference on 3 sliding windows of size 8 step size 4
+                if keyframes[i] - keyframes[i-1] <16:
+                    keyframes.pop(i)
+
+    else:
+        keyframes = [start_frame, end_frame]
+
+
+    for j, keyframe in enumerate(keyframes):
+
+        
+        # come in as T, H, W
+        masks0 = {id: mask.at(keyframe) for id, mask in masks.items() if (mask.at(keyframe)>0).any()}
+
+        # the order that objects will appear - since id order in query tensor is preserved along the N axis
+        ids = masks0.keys()
+
+        num_instances0 = len(ids)
+
+        # we evenly distribute points per instance. smaller instances (surface area wise) require more point per pixel for good estimation
+        # due to the assumption that error scales as we approach pixel-level or sub-pixel level precision
+        points_per_instance = num_tracks//num_instances0
+
+        coords_per_mask = [torch.nonzero(mask).float() for mask in masks0()]
+
+        # Randomly sample N points (e.g., N=500)
+        indices = [torch.randperm(c.size(0))[:points_per_instance] for c in coords_per_mask]
+        coords = np.cat([c[indices] for c in coords_per_mask], axis = 0) # Contains [y, x]
+
+
+        # Format to (B, N, 3) with (t, x, y)
+        t = torch.ones((1, N, 1), device=device) * keyframe
+        coords = coords[:, [1, 0]].unsqueeze(0) # Swap [y, x] -> [x, y] and add batch dim
+
+        queries = torch.cat([t, coords], dim=-1)
+
+        if i+1<len(keyframes):
+            stop = keyframes[i+1]
+        else:
+            stop = end_frame
+        point_tracks, point_visibility = get_point_tracks(video=video, queries = queries, start_frame=keyframe, end_frame = stop)
+        # (B, T, N, 2), (B, T, N, 2), (B, T, N, 1)
+        correspondences = torch.cat([queries, point_tracks, point_visibility], axis = 3)
+        # del the batch dim
+        correspondences.squeeze(0)
+        T, N, X = correspondences.size()
+
+        # since points return from get_point_tracks in original order of id, we can reconstruct which point belong where without an extra DS
+        correspondences = torch.reshape(T, points_per_instance, num_instances0, X)
+
+        # mask = correspondences[..., 4] >= 0.5
+        # zero out entries where false
+        # correspondences = correspondences * mask[..., None]
+
+        # next: have a arg for doing umeyama vs. runtime and returning vs. just dumping the point tracks as npzs. 
+        for i in range(correspondences.size(3)):
+            instance_tracks = correspondences[:, :, i, :]
+
+            src = instance_tracks[:, :, :, 0:2]
+            dst= instance_tracks[:, :, :, 0:2]
+            id = ids[i]
+            # if this is the first instance of it, we'll say its rotation is I and translation is its world coordinates mean
+            if results[ids[i]].empty():
+                src_with_depth = get_points_with_depth(depth=depths, points = src, indices = [start_frame])
+                src_W = points_c2w(points_i2c(src_with_depth))
+                # src_W is T, N, C=3
+                centroid = torch.mean(src_W, axis = 2)
+                Rt = [
+                    [1, 0, 0, centroid[0]],
+                    [0, 1, 0, centroid[1]],
+                    [0, 0, 1, centroid[2]]
+                    ]
+            if 
+                
+                # if this is a keyframe (we lost some tracks ), we would need a way to reset our pointer to a certain track to denote that it is the anchor
+                # then add the umeyama calculation
+
+                # add the track
+                
+    return results
+
+
+
+def track_object_with_flow(
     instance_mask: InstanceMask,
     flow: DenseFlow,
     depths: VipeDepth,

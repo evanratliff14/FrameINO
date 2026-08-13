@@ -1,5 +1,5 @@
 # import inference code
-from SAM3D.SAM3DObjects.notebook.inference import Inference, load_image, load_single_mask
+from preprocess.SAM3D.SAM3DObjects.notebook.inference import Inference, load_image, load_single_mask
 
 
 def reconstruct(image, mask):

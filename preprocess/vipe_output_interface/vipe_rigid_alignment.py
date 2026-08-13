@@ -105,7 +105,7 @@ def get_points(
 
 def get_points_with_depth(
     depth: VipeDepth,
-    # should be shape T, N, C=5 (du, dv, w, u,v)
+    # should be shape T, N, C=2+ (u,v)
     points: np.ndarray,
     indices: list[int],
 ):

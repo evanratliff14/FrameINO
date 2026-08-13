@@ -47,7 +47,6 @@ class Camera:
         self._pose_inds, self._c2w = read_pose_c2w(base_path)
         self._intr_inds, self._intrinsics = read_intrinsics(base_path)
         self._c2w = np.asarray(self._c2w, dtype=np.float64)
-        self._intrinsics = np.asarray(self._intrinsics, dtype=np.float64)
         if self._c2w.shape[0] != self._intrinsics.shape[0]:
             logger.warning(
                 "Pose count (%d) != intrinsics count (%d) under %s",
@@ -79,15 +78,7 @@ class Camera:
 
     def get_intrinsics(self, indices: list[int]) -> list[np.ndarray | None]:
         """Return ``[fx, fy, cx, cy]`` for each index (O(1) per index)."""
-        out: list[np.ndarray | None] = []
-        n = int(self._intrinsics.shape[0])
-        for idx in indices:
-            i = int(idx)
-            if i < 0 or i >= n:
-                out.append(None)
-            else:
-                out.append(self._intrinsics[i])
-        return out
+        return self._intrinsics[indices, :]
 
     def get_intrinsics_to_matrix(self, indices: list[int]) -> torch.Tensor:
         # intrinsics: (..., 4) -> [fx, fy, cx, cy]
