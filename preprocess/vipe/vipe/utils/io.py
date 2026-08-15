@@ -409,28 +409,25 @@ def read_instance_phrases(instance_phrase_path: Path) -> dict[int, str]:
 
 def save_artifacts(out_path: ArtifactPath, cached_final_stream: VideoStream, slam_output: SLAMOutput) -> None:
     """
-    Save each attribute independently.
+    Save each attribute independently. We comment out I/O that will not be fetched by scripts for disk space
     """
-    #TODO: only save what we need to maximize storage capability. ex. for non presentational purposes we don't need the RGB,
-    # we probably won't need the intrinsinsics? 
-
     # Save OpenCV cam2world matrices as 4x4 matrix in npz file
     save_pose_artifacts(out_path, cached_final_stream)
 
     # Save intrinsics as [fx, fy, cx, cy] in npz file
     save_intrinsics_artifacts(out_path, cached_final_stream)
 
-    # Save original RGB as H264-encoded video.
-    save_rgb_artifacts(out_path, cached_final_stream)
+    # Save original RGB as H264-encoded video  - we will  already have this in our scratch
+    # save_rgb_artifacts(out_path, cached_final_stream)
 
     # Save metric depth as zipped exr files.
     save_depth_artifacts(out_path, cached_final_stream)
 
-    # Evan Ratliff - save dense flow tracks with which to match the dynamic masks with
-    save_flow_artifacts(out_path, slam_output)
+    # Evan Ratliff - save dense flow tracks with which to match the dynamic masks with - switched to CoTracker3
+    # save_flow_artifacts(out_path, slam_output)
 
-    # Save sparse keypoint tracks (cuVSLAM / SparseTracks observations).
-    save_sparse_tracks_artifacts(out_path, slam_output)
+    # Save sparse keypoint tracks (cuVSLAM / SparseTracks observations). - Switched to cotracker3
+    # save_sparse_tracks_artifacts(out_path, slam_output)
 
     # Save Instance mask as zipped PNG files.
     instance_list = [
