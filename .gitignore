@@ -35,3 +35,4 @@ preprocess/sam2_code
 !__assets__/*
 !__assets__/page/*
 preprocess/.deps/*
+.cursorrules
