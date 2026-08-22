@@ -68,12 +68,25 @@ def single_process(csv_folder_path, store_folder_path, GPU_offset, basepath):
                 continue
 
             video_path = row[elements["video_path"]]
+            valid_ranges = list(row[elements["SceneCut_Autoshot"]])
+            first_valid_range = None
+            for range in valid_ranges:
+                if range[0] -range[1] >=100:
+                    first_valid_range = range
+                    break
+            # the video will not be included in the output csv
+            if first_valid_range == None:
+                continue
+
+            start_frame = row[list(elements[valid_duration])[0]] + first_valid_range[0]
+            end_frame = row[list(elements[valid_duration])[0]] + first_valid_range[1]
+            
             vipe_output_filepath = os.path.join(
                 basepath, "OpenVid-1M", "csv", "vipe_results", os.path.basename(video_path)
             )
             os.makedirs(os.path.dirname(vipe_output_filepath), exist_ok=True)
 
-            cmd = ["uv", "run", "--project", "vipe", "vipe", "infer", video_path, "-o", vipe_output_filepath]
+            cmd = ["uv", "run", "--project", "vipe", "vipe", "infer", video_path, "--start_frame", start_frame, "--end_frame", end_frame, "-o", vipe_output_filepath]
             print("Running:", " ".join(cmd), flush=True)
             subprocess.run(cmd, cwd=vipe_dir, check=True)
 
