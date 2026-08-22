@@ -644,7 +644,16 @@ class ProcessedVideoStream(VideoStream):
         return iterator
 
     def __len__(self) -> int:
-        return len(self.stream)
+        total = len(self.stream)
+        
+        # Adjust length if SliceStreamProcessor is active
+        for p in self.processors:
+            if isinstance(p, SliceStreamProcessor):
+                start = p.start_frame
+                end = min(total, p.end_frame)
+                return max(0, end - start)
+                
+        return total
 
     def __iter__(self):
         for pass_idx in range(self.n_passes_required):
@@ -676,3 +685,25 @@ class StreamList:
     def stream_name(self, index: int) -> str:
         # This can be overriden by subclasses to avoid instantiating the stream.
         return self[index].name()
+
+class SliceStreamProcessor(StreamProcessor):
+    """
+    Slices an incoming video stream iterator to a specific [start_frame, end_frame) range.
+    """
+
+    def __init__(self, start_frame: int = 0, end_frame: int | None = None) -> None:
+        self.start_frame = max(0, start_frame)
+        self.end_frame = end_frame
+
+    def update_iterator(self, previous_iterator: Iterator[VideoFrame], pass_idx: int) -> Iterator[VideoFrame]:
+        for frame_idx, frame in enumerate(previous_iterator):
+            if frame_idx < self.start_frame:
+                continue
+            if self.end_frame is not None and frame_idx >= self.end_frame:
+                break
+            
+            # Re-index frame idx relative to slice start or keep raw_frame_idx intact
+            yield frame
+
+    def __call__(self, frame_idx: int, frame: VideoFrame) -> VideoFrame:
+        return frame

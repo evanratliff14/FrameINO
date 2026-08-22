@@ -8,6 +8,7 @@ import pandas as pd
 from scipy.stats import gaussian_kde
 from scipy.signal import find_peaks
 import seaborn as sns
+import cv2
 
 def derivative(combined_vtss):
 
@@ -114,15 +115,18 @@ def main(csv_filepath):
 
     # Combine all collected series into a single master Series
     combined_vtss = pd.concat(all_vtss_series, ignore_index=True)
+
     instruction_prompt = [
         "The video has text overlays, watermarks, artificial borders, or multiple views?",
         "The video is of real-life?",
-        "Does the scene contain enough stable background features to perform camera estimation?",
-        "Is any part of the video heavily unfocused or motion-blurred?",
-        "Is there at least one motionable subject and does that subject move in at least two out of three camera axes directions?",
+        "Does video suffer from motion blur, camera jittering, or sudden viewpoint shift?",
+        "Foreground occlusion examples: fog, heavy rain, or a person passing too close to the camera. Does video contain significant foreground occlusion?",
+        "Does the scene contain any vehicles, animals, humans, objects, tools, or other objects suitable for moving around the scene artificially?",
         "Does the scene contain sexual, violent/gory, political, or any other 'Not-Safe-For-Work' content?",
-        "The video contains scene-cuts, transitions, shot changes, or heavy processing?"
+        "Does the scene contain an object that leaves the frame of view at any time?",
+        "Does the scene contain an object that enters the frame of view at any time?"
     ]
+    
     # ccdf(combined_vtss)
     # corr_matrix = df[instruction_prompt].corr(numeric_only=True)
 
@@ -152,14 +156,71 @@ def main(csv_filepath):
     # nsfw = df[df[instruction_prompt[5]] < 0.8]
     # nsfw.to_csv("nsfw.csv")
     # df= df[(df[instruction_prompt[4]] < 0.2) | (df[instruction_prompt[5]] < 0.8) | (df[instruction_prompt[3]] < 0.5) | (df[instruction_prompt[2]] < 0.1) | (df[instruction_prompt[1]] < 0.5) | (df[instruction_prompt[0]] < 0.5)]             
-    df['vlm_score'] = df[instruction_prompt[:5]].sum(axis=1) 
+    combined_vtss['vlm_score'] = combined_vtss[instruction_prompt[:5]].sum(axis=1)
+
     score_density_f(df['vlm_score']) 
     plt.title(f"Density plot of 'vlm_score'")
     plt.savefig(f"vlm_score.jpg", dpi=300)                                                        
-    # print(f"Shot change: {sc_len}")
-    # print(f"Percent fail is {percent_fail}")
-    print(f"Cut number: {len(df)}")
     print(f"Saved data from {length} rows")
+
+
+
+    def display_video_scores(df, instruction_prompt):
+        for idx, row in df.iterrows():
+            video_path = row.get('video_path')
+            if not video_path or not cv2.os.path.exists(str(video_path)):
+                print(f"Skipping row {idx}: Invalid or missing video path '{video_path}'")
+                continue
+
+            cap = cv2.VideoCapture(str(video_path))
+            if not cap.isOpened():
+                print(f"Error opening video: {video_path}")
+                continue
+
+            # Prepare text lines to render
+            lines = [f"Total VLM Score: {row['vlm_score']:.2f}", "--- Subscores ---"]
+            for p in instruction_prompt:
+                score = row.get(p, np.nan)
+                short_prompt = " ".join(p.split()[:5]) + "..."
+                lines.append(f"{short_prompt}: {score:.2f}" if pd.notnull(score) else f"{short_prompt}: N/A")
+
+            exit_requested = False
+            while cap.isOpened():
+                ret, frame = cap.read()
+                if not ret:
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, 0) # Loop video playback
+                    continue
+
+                # Draw semi-transparent HUD overlay
+                overlay = frame.copy()
+                h, w = frame.shape[:2]
+                cv2.rectangle(overlay, (10, 10), (min(500, w - 10), 30 + len(lines) * 22), (0, 0, 0), -1)
+                frame = cv2.addWeighted(overlay, 0.6, frame, 0.4, 0)
+
+                # Render score text onto the frame
+                y0 = 32
+                for i, line in enumerate(lines):
+                    color = (0, 255, 0) if i == 0 else (255, 255, 255)
+                    scale = 0.55 if i == 0 else 0.45
+                    cv2.putText(frame, line, (20, y0 + i * 20), cv2.FONT_HERSHEY_SIMPLEX, scale, color, 1, cv2.LINE_AA)
+
+                cv2.imshow("Video Score Viewer", frame)
+                
+                key = cv2.waitKey(30) & 0xFF
+                if key == 27:  # Esc key
+                    exit_requested = True
+                    break
+                elif key == ord('0'):  # '0' key -> next video
+                    break
+
+            cap.release()
+            if exit_requested:
+                break
+
+        cv2.destroyAllWindows()
+
+    # Run viewer on concatenated dataframe
+    display_video_scores(combined_vtss, instruction_prompt)
 
 
 

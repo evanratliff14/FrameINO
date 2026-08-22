@@ -20,6 +20,7 @@ import click
 from vipe import make_pipeline
 from vipe.config import parse_typed_config
 from vipe.streams.base import ProcessedVideoStream
+from vipe.streams.base import SliceStreamProcessor
 from vipe.streams.frame_dir_stream import FrameDirStream
 from vipe.streams.raw_mp4_stream import RawMp4Stream
 from vipe.utils.logging import configure_logging
@@ -32,6 +33,17 @@ from vipe.utils.viser import run_viser
     "--image-dir",
     type=click.Path(exists=True, path_type=Path),
     help="Directory containing image frames",
+)
+
+@click.option(
+    "--start_frame",
+    type = int,
+    help = "start frame from which to process with ViPE"
+)
+@click.option(
+    "--end_frame",
+    type = int,
+    help = "end frame from which to process with ViPE"
 )
 @click.option(
     "--output",
@@ -75,13 +87,22 @@ def infer(video: Path | None, image_dir: Path | None, output: Path, pipeline: st
     logger.info(f"Processing {input_desc}...")
     vipe_pipeline = make_pipeline(args.pipeline)
 
+    # Create the frame-range processor
+    slice_processor = SliceStreamProcessor(start_frame=args.start_frame, end_frame=args.end_frame)
+
     if image_dir:
         # Use frame directory stream
-        video_stream = ProcessedVideoStream(FrameDirStream(image_dir), []).cache(desc="Reading image frames")
+        video_stream = ProcessedVideoStream(
+            FrameDirStream(image_dir), 
+            [slice_processor]
+        ).cache(desc="Reading image frames")
     else:
         assert video is not None
-        # Some input videos can be malformed, so we need to cache the videos to obtain correct number of frames.
-        video_stream = ProcessedVideoStream(RawMp4Stream(video), []).cache(desc="Reading video stream")
+        # Read raw MP4 stream filtered by frame range
+        video_stream = ProcessedVideoStream(
+            RawMp4Stream(video), 
+            [slice_processor]
+        ).cache(desc="Reading video stream")
 
     vipe_pipeline.run(video_stream)
     logger.info("Finished")
