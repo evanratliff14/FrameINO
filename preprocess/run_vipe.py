@@ -67,13 +67,13 @@ def single_process(csv_folder_path, store_folder_path, GPU_offset, basepath):
                     writer.writerows(info_lists)
                 continue
 
-            video_path = row[elements["filepath"]]
+            video_path = row[elements["video_path"]]
             vipe_output_filepath = os.path.join(
                 basepath, "OpenVid-1M", "csv", "vipe_results", os.path.basename(video_path)
             )
             os.makedirs(os.path.dirname(vipe_output_filepath), exist_ok=True)
 
-            cmd = ["uv", "run", "vipe", "infer", video_path, "-o", vipe_output_filepath]
+            cmd = ["uv", "run", "--project", "vipe", "vipe", "infer", video_path, "-o", vipe_output_filepath]
             print("Running:", " ".join(cmd), flush=True)
             subprocess.run(cmd, cwd=vipe_dir, check=True)
 
@@ -102,10 +102,10 @@ def single_process(csv_folder_path, store_folder_path, GPU_offset, basepath):
 
 
         # Last append for the rest; the following might raise bugs
-        # with open(store_file_path, 'a', newline='') as csvfile:
-        #     writer = csv.writer(csvfile)
-        #     left_amount = idx % store_freq
-        #     writer.writerows(info_lists[-1*left_amount:])
+        with open(store_file_path, 'a', newline='') as csvfile:
+            writer = csv.writer(csvfile)
+            left_amount = idx % store_freq
+            writer.writerows(info_lists[-1*left_amount:])
 
 
 
@@ -119,7 +119,7 @@ if __name__ == "__main__":
 
     # Fundamental Setting
     basepath = "/scratch/uft5by"
-    csv_folder_path = "/scratch/uft5by/OpenVid-1M/csv/?"       # Input
+    csv_folder_path = "/scratch/uft5by/OpenVid-1M/csv/general_dataset_scoring_vlm_left"       # Input
     store_folder_path = "/scratch/uft5by/OpenVid-1M/csv/general_dataset_vipe"                       # Output
     GPU_offset = args.GPU_offset
 

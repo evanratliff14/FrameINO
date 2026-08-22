@@ -278,8 +278,6 @@ if __name__ == "__main__":
     store_prompt_name = "Structured_Text_Prompt"
     target_height = 256
     target_width = 384
-    # max_frames_consider = 160             # About 81 * 2
-    # sample_frame_freq = 16                # 原来是1fps，大改就是24个step; 目前更加dense一点的吧，设置16
     debug = True
 
     # Batch of prompts
@@ -287,16 +285,17 @@ if __name__ == "__main__":
     instruction_prompt = [
         "The video has text overlays, watermarks, artificial borders, or multiple views?",
         "The video is of real-life?",
-        "Does the scene contain enough stable background features to perform camera estimation?",
-        "Is any part of the video heavily unfocused or motion-blurred?",
-        "Is there at least one motionable subject and does that subject move in at least two out of three camera axes directions?",
+        "Does video suffer from motion blur, camera jittering, or sudden viewpoint shift?",
+        "Foreground occlusion examples: fog, heavy rain, or a person passing too close to the camera. Does video contain significant foreground occlusion?",
+        "Does the scene contain any vehicles, animals, humans, objects, tools, or other objects suitable for moving around the scene artificially?",
         "Does the scene contain sexual, violent/gory, political, or any other 'Not-Safe-For-Work' content?",
-        "The video contains scene-cuts, transitions, shot changes, or heavy processing?"
+        "Does the scene contain an object that leaves the frame of view at any time?",
+        "Does the scene contain an object that enters the frame of view at any time?"
     ]
 
      # 1 means that if the answer is true to the question[idx], then we give it a score of 1. -1 means that if the question is 
     # false, then we store a 1. Else store 0 
-    legend = np.array([-1, 1, 1, -1, 1, -1, -1])
+    legend = np.array([-1, 1, -1, -1, 1, -1, 1, 1])
     # we use this construction for flipping logit scores
     helper = np.array([1 if k==-1 else 0 for k in legend])
 
@@ -319,7 +318,7 @@ if __name__ == "__main__":
         seed=0,
         max_model_len=2200, # Caps total context sequence window. experiencing 2145
         enable_prefix_caching=True,
-        max_num_seqs=64,            # Allows vLLM to process up to 64 independent chunks in parallel
+        max_num_seqs=32,            # Allows vLLM to process up to 64 independent chunks in parallel
         # quantization="fp8"
     )
     print(f"Instantiated VLM \n")
