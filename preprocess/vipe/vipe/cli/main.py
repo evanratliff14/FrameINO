@@ -54,7 +54,7 @@ from vipe.utils.viser import run_viser
 )
 @click.option("--pipeline", "-p", default="default", help="Pipeline configuration to use (default: 'default')")
 @click.option("--visualize", "-v", is_flag=True, help="Enable visualization of intermediate results")
-def infer(video: Path | None, image_dir: Path | None, output: Path, pipeline: str, visualize: bool):
+def infer(video: Path | None, image_dir: Path | None, output: Path, pipeline: str, visualize: bool, start_frame: int, end_frame: int):
     """Run inference on a video file or directory of images."""
 
     logger = configure_logging()
@@ -88,7 +88,7 @@ def infer(video: Path | None, image_dir: Path | None, output: Path, pipeline: st
     vipe_pipeline = make_pipeline(args.pipeline)
 
     # Create the frame-range processor
-    slice_processor = SliceStreamProcessor(start_frame=args.start_frame, end_frame=args.end_frame)
+    slice_processor = SliceStreamProcessor(start_frame=start_frame, end_frame=end_frame)
 
     if image_dir:
         # Use frame directory stream

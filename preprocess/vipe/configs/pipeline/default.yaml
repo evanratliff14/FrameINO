@@ -15,12 +15,15 @@ init:
       - person
       - animal
       - vehicle
-      - ball
-      - balloon
-      - gun
-      - pet
-      - car
-      - bus
+      - projectile
+      - handheld object
+      - furniture
+      - building
+      - plant
+      - rock
+      - device
+      - sign
+      - object
     add_sky: true
 
 slam:
@@ -44,6 +47,6 @@ output:
   save_slam_map: false
 
   # Visualization videos to BASE_PATH/vipe/xxx.mp4
-  save_viz: true
+  save_viz: false
   viz_downsample: 2
   viz_attributes: [['rgb', 'instance'], ['depth', 'pcd']]

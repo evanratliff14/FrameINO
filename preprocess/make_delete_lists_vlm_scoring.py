@@ -21,29 +21,29 @@ PROMPT_OCC = (
     "Foreground occlusion examples: fog, heavy rain, or a person passing too close to the camera. "
     "Does video contain significant foreground occlusion?"
 )
-PROMPT_OBJ = (
-    "Does the scene contain any vehicles, animals, humans, objects, tools, or other objects "
-    "suitable for moving around the scene artificially?"
-)
+# PROMPT_OBJ = (
+#     "Does the scene contain any vehicles, animals, humans, objects, tools, or other objects "
+#     "suitable for moving around the scene artificially?"
+# )
 PROMPT_NSFW = (
     "Does the scene contain sexual, violent/gory, political, or any other 'Not-Safe-For-Work' content?"
 )
 
-NSFW_THRESH = 0.8
-REAL_THRESH = 0.5
-TEXT_THRESH = 0.5
+NSFW_THRESH = 0.75
+REAL_THRESH = 0.75
+TEXT_THRESH = 0.75
 
 
 def process_one(fp, output_filepath, threshold):
     df = pd.read_csv(fp)
     total_length = len(df)
 
-    combo = df[PROMPT_BLUR] + df[PROMPT_OBJ] + df[PROMPT_OCC]
+    combo = df[PROMPT_BLUR] + df[PROMPT_OCC]
     df = df[
-        (df[PROMPT_NSFW] < NSFW_THRESH)
-        & (df[PROMPT_REAL] < REAL_THRESH)
-        & (df[PROMPT_TEXT] < TEXT_THRESH)
-        & (combo < threshold)
+        (df[PROMPT_NSFW] >= NSFW_THRESH)
+        & (df[PROMPT_REAL] >= REAL_THRESH)
+        & (df[PROMPT_TEXT] >= TEXT_THRESH)
+        & (combo >= threshold)
     ]
     left_length = len(df)
 
@@ -82,16 +82,16 @@ def main(input_filepath, output_filepath, num_workers, threshold):
 
 if __name__ == "__main__":
     argparser = argparse.ArgumentParser()
-    argparser.add_argument("--input_filepath", type=str, required=True)
-    argparser.add_argument("--output_filepath", type=str, required=True)
+    input_filepath = "/scratch/uft5by/OpenVid-1M/csv/general_dataset_scoring_vlm"
+    output_filepath = "/scratch/uft5by/OpenVid-1M/csv/general_dataset_scoring_vlm_left"
     argparser.add_argument("--num_workers", type=int, default=8)
     argparser.add_argument("--threshold", type=float, required=True,
                            help="keep rows where blur+vehicles+occlusion sum is < this value")
     args = argparser.parse_args()
 
     main(
-        input_filepath=args.input_filepath,
-        output_filepath=args.output_filepath,
+        input_filepath=input_filepath,
+        output_filepath=output_filepath,
         num_workers=args.num_workers,
         threshold=args.threshold,
     )

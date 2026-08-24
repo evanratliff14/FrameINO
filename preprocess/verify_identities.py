@@ -21,8 +21,7 @@ from transformers import AutoProcessor
 from vllm import LLM, SamplingParams
 
 # vipe mask loaders
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "vipe_output_interface"))
-from vipe_masks import VipeMasks, InstanceMask
+from preprocess.vipe_output_interface.vipe_masks import VipeMasks, InstanceMask
 
 csv.field_size_limit(sys.maxsize)
 os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
@@ -40,8 +39,8 @@ INSTRUCTION_PROMPT = (
     "This image is a collage of object crops. "
     "Detect every valid medium-to-large subject (people, animals, rigid objects). "
     "Do NOT detect sky, background, amorphous / non-rigid blobs, or tiny clutter. "
-    "Return ONLY a JSON list of objects with absolute pixel boxes on this collage image, "
-    'in the exact format: [{"bbox":[x1,y1,x2,y2]}, ...]. '
+    "Return ONLY a JSON list of objects with boxes in [x_min, y_min, x_max, y_max] format "
+    'on a 0 to 1000 normalized scale, like: [{"bbox":[x1,y1,x2,y2]}, ...]. '
     "No markdown, no prose."
 )
 
@@ -183,7 +182,11 @@ def _parse_bboxes(text: str):
     boxes = []
     for item in data:
         bbox = item["bbox"] if isinstance(item, dict) else item
-        x1, y1, x2, y2 = [float(v) for v in bbox]
+        # Convert relative [0, 1000] scale to canvas pixel scale
+        x1 = (float(bbox[0]) / 1000.0) * canvas_w
+        y1 = (float(bbox[1]) / 1000.0) * canvas_h
+        x2 = (float(bbox[2]) / 1000.0) * canvas_w
+        y2 = (float(bbox[3]) / 1000.0) * canvas_h
         boxes.append((x1, y1, x2, y2))
     return boxes
 
@@ -251,17 +254,14 @@ def verify_identities(video_path, vipe_output_filepath, llm, processor, sampling
     tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
     tmp_path = tmp.name
     tmp.close()
-    Image.fromarray(collage).save(tmp_path)
-
-    messages = [
-        {
-            "role": "user",
-            "content": [
-                {"type": "image", "image": tmp_path},
-                {"type": "text", "text": INSTRUCTION_PROMPT},
-            ],
-        }
-    ]
+    collage_img = Image.fromarray(collage)
+    messages = [{
+        "role": "user",
+        "content": [
+            {"type": "image", "image": collage_img},
+            {"type": "text", "text": INSTRUCTION_PROMPT},
+        ]
+    }]
     image_inputs, _video_inputs = process_vision_info(
         messages,
         image_patch_size=processor.image_processor.patch_size,
@@ -317,11 +317,11 @@ def single_process(input_csv_folder_path, store_csv_folder_path, GPU_offset, llm
                         writer.writerows([row + new_addition_content])
                 continue
 
-            video_path = row[elements["filepath"]]
+            video_path = row[elements["video_path"]]
             vipe_output_filepath = row[elements["vipe_output_filepath"]]
 
             if resume:
-                if video_path == last_store_row[elements["filepath"]]:
+                if video_path == last_store_row[elements["video_path"]]:
                     print("We find resume at", row_idx)
                     find_resume = True
                     continue
@@ -360,9 +360,9 @@ if __name__ == "__main__":
     parser.add_argument("--GPU_offset", type=int, default=0)
     args = parser.parse_args()
 
-    checkpoint_path = "/scratch/uft5by/Qwen3.6-27B"
-    input_csv_folder_path = "path/to/input_csv"
-    store_csv_folder_path = "path/to/output_csv"
+    checkpoint_path = "/scratch/uft5by/Qwen3.8-27B-Instruct"
+    input_csv_folder_path = "/scratch/uft5by/OpenVid-1M/csv/general_dataset_vipe"
+    store_csv_folder_path = "/scratch/uft5by/OpenVid-1M/csv/general_dataset_verified_identities"
     GPU_offset = args.GPU_offset
     resume = False
     debug = True
@@ -373,19 +373,20 @@ if __name__ == "__main__":
     llm = LLM(
         model=checkpoint_path,
         trust_remote_code=True,
-        gpu_memory_utilization=0.85,
+        gpu_memory_utilization=0.90,
         enforce_eager=False,
         tensor_parallel_size=1,
         seed=0,
-        max_model_len=8192,
+        max_model_len=2200,
         enable_prefix_caching=True,
         max_num_seqs=8,
+        dtype = "bfloat16"
     )
     print("Instantiated VLM \n")
 
     sampling_params = SamplingParams(
         temperature=0,
-        max_tokens=1024,
+        max_tokens=1024
     )
 
     if not os.path.exists(store_csv_folder_path):

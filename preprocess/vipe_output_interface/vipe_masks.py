@@ -14,7 +14,7 @@ from pathlib import Path
 
 import numpy as np
 
-from vipe_io import modality_exists, read_instance_masks, read_instance_phrases
+from preprocess.vipe_output_interface.vipe_io import modality_exists, read_instance_masks, read_instance_phrases
 
 logger = logging.getLogger(__name__)
 
