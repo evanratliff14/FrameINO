@@ -62,7 +62,7 @@ def single_process(csv_folder_path, store_folder_path, GPU_offset, basepath):
 
             # Safely evaluate string representation of lists
             try:
-                valid_ranges = ast.literal_eval(row[elements["SceneCut_AutoShot"]])
+                valid_ranges = ast.literal_eval(row[elements["scene_cut"]])
             except (ValueError, SyntaxError):
                 continue
 
@@ -87,7 +87,7 @@ def single_process(csv_folder_path, store_folder_path, GPU_offset, basepath):
             end_frame = base_offset + first_valid_range[1]
 
             vipe_output_filepath = os.path.join(
-                basepath, "OpenVid-1M", "csv", "vipe_results", os.path.basename(video_path)
+                basepath, "OpenVid-1M", "csv", "vipe_results", os.path.basename(video_path).split(".")[0]
             )
             os.makedirs(os.path.dirname(vipe_output_filepath), exist_ok=True)
 
@@ -142,7 +142,7 @@ if __name__ == "__main__":
 
     basepath = "/scratch/uft5by"
     csv_folder_path = "/scratch/uft5by/OpenVid-1M/csv/general_dataset_scoring_vlm_left"
-    store_folder_path = "/scratch/uft5by/OpenVid-1M/csv/general_dataset_vipe"
+    store_folder_path = "/scratch/uft5by/OpenVid-1M/objects/general_dataset_vipe"
     GPU_offset = args.GPU_offset
 
     if not os.path.exists(store_folder_path):

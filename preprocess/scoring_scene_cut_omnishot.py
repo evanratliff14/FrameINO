@@ -96,7 +96,7 @@ def get_clean_shots(model, device, frames: np.ndarray) -> list:
 def single_process(csv_folder_path, store_folder_path, GPU_offset):
 
     # Setting
-    task_name = "SceneCut_AutoShot"
+    task_name = "scene_cut"
     store_freq = 50
 
 
