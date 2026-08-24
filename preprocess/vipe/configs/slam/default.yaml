@@ -10,7 +10,7 @@ keyframe_thresh: 4.0
 # add edges between frames whithin this distance
 frontend_thresh: 16.0
 # frontend optimization window
-frontend_window: 25
+frontend_window: 16
 # force edges between frames within radius
 frontend_radius: 2
 # non-maximal supression of edges

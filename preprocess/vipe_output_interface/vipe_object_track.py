@@ -10,6 +10,7 @@ from vipe_io import read_rgb_frames
 from preprocess.SAM3D.sam_3d import reconstruct
 from preprocess.cotracker import get_point_tracks
 import trimesh
+import torch
 import argparse
 from pathlib import Path
 
@@ -154,14 +155,14 @@ def track_objects_with_cotracker(
             # we must apply this transformation to the Umeyama-Kabsch-acquired T to get the full transformation
             src_Rt = np.eye(4, 4)
 
-            if results[id].empty():
+            if result[id].empty():
                 Rt = [
                     [1, 0, 0, centroid[0]],
                     [0, 1, 0, centroid[1]],
                     [0, 0, 1, centroid[2]],
                     [0, 0, 0, 1          ]
                     ]
-                results[id][src_frame] = Rt
+                result[id][src_frame] = Rt
             else:
                 src_Rt = results[id][max(results[id].keys())]
 
@@ -188,9 +189,9 @@ def track_objects_with_cotracker(
                 # apply the transformation from the last keyframe
                 Rt_result = src_Rt @ Rt_result
 
-                resultss[i][j] = Rt_result
+                result[i][j] = Rt_result
                 
-    return results
+    return result
 
 
 
