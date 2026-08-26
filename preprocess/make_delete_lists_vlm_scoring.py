@@ -28,11 +28,12 @@ PROMPT_OCC = (
 PROMPT_NSFW = (
     "Does the scene contain sexual, violent/gory, political, or any other 'Not-Safe-For-Work' content?"
 )
+PROMPT_OBJ_MOTION = "Does the scene contain any vehicles, animals, humans, objects, tools, or other objects suitable for moving around the scene artificially?"
 
 NSFW_THRESH = 0.75
 REAL_THRESH = 0.75
 TEXT_THRESH = 0.75
-
+OBJ_MOTION_THRESH = 0.21
 
 def process_one(fp, output_filepath, threshold):
     df = pd.read_csv(fp)
@@ -44,6 +45,7 @@ def process_one(fp, output_filepath, threshold):
         & (df[PROMPT_REAL] >= REAL_THRESH)
         & (df[PROMPT_TEXT] >= TEXT_THRESH)
         & (combo >= threshold)
+        & (df[PROMPT_OBJ_MOTION] >= OBJ_MOTION_THRESH)
     ]
     left_length = len(df)
 

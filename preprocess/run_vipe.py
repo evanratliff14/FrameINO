@@ -15,15 +15,18 @@ import os
 import sys
 import time
 from pathlib import Path
+import gc
 
 csv.field_size_limit(sys.maxsize)
-from preprocess.vipe.vipe.streams.base import ProcessedVideoStream, SliceStreamProcessor
-from preprocess.vipe.vipe.streams.raw_mp4_stream import RawMp4Stream
-from preprocess.vipe.vipe import make_pipeline
-from preprocess.vipe.vipe.config import parse_typed_config
 
-script_dir = os.path.dirname(os.path.abspath(__file__))
+from vipe.streams.base import ProcessedVideoStream, SliceStreamProcessor
+from vipe.streams.raw_mp4_stream import RawMp4Stream
+from vipe.pipeline import make_pipeline
+from vipe.config import parse_typed_config
+
 import torch
+if not torch.cuda.is_available():
+        raise RuntimeError("CUDA machine not available!")
 
 
 def build_pipeline(pipeline_name: str, output_root: str):
@@ -63,10 +66,9 @@ def run_one_video(vipe_pipeline, video_path: str, start_frame: int, end_frame: i
 def single_process(csv_folder_path, store_folder_path, GPU_offset, basepath, pipeline_name):
     store_freq = 10
 
-    if not torch.cuda.is_available():
-        raise RuntimeError("CUDA machine not available!")
+    
 
-    results_root = os.path.join(basepath, "OpenVid-1M", "csv", "vipe_results")
+    results_root = os.path.join(basepath, "OpenVid-1M", "objects", "vipe_results")
     os.makedirs(results_root, exist_ok=True)
 
     print("Loading ViPE pipeline (models cached for all videos in this process)...", flush=True)
@@ -124,20 +126,24 @@ def single_process(csv_folder_path, store_folder_path, GPU_offset, basepath, pip
 
             base_offset = valid_duration_val[0] if isinstance(valid_duration_val, (list, tuple)) else int(valid_duration_val)
 
-            start_frame = base_offset + first_valid_range[0]
-            end_frame = base_offset + first_valid_range[1]
+            start_frame = int(base_offset + first_valid_range[0])
+            end_frame = int(base_offset + first_valid_range[1])
 
             vipe_output_filepath = os.path.join(
                 results_root, os.path.basename(video_path).split(".")[0]
             )
 
-            run_one_video(
-                vipe_pipeline,
-                video_path,
-                start_frame,
-                end_frame,
-                vipe_output_filepath,
-            )
+            try:
+                run_one_video(
+                    vipe_pipeline,
+                    video_path,
+                    start_frame,
+                    end_frame,
+                    vipe_output_filepath,
+                )
+            except Exception as e:
+                print(e, flush=True)
+                continue
 
             # Construct row payload (avoid dictionary assignment on plain list)
             processed_row = row + [str(first_valid_range), vipe_output_filepath]
@@ -162,6 +168,10 @@ def single_process(csv_folder_path, store_folder_path, GPU_offset, basepath, pip
 
                 # Clear batch buffer
                 batch_to_write.clear()
+                
+            # After run_one_video(...)
+            torch.cuda.empty_cache()
+            gc.collect()
 
         # Write remaining unprocessed rows in the buffer after loop completion
         if batch_to_write:

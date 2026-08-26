@@ -8,7 +8,7 @@ warmup: 8
 # threshold to create a new keyframe
 keyframe_thresh: 4.0
 # add edges between frames whithin this distance
-frontend_thresh: 16.0
+frontend_thresh: 24.0
 # frontend optimization window
 frontend_window: 16
 # force edges between frames within radius

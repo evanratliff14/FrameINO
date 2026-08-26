@@ -24,6 +24,7 @@ def run(args: DictConfig) -> None:
     for stream_idx in range(len(stream_list)):
         video_stream = stream_list[stream_idx]
         logger.info(f"Processing {video_stream.name()} ({stream_idx + 1} / {len(stream_list)})")
+        # extract a single video stream and run it once at a time
         pipeline.run(video_stream)
         logger.info(f"Finished processing {video_stream.name()}")
 

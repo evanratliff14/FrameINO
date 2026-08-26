@@ -91,7 +91,8 @@ class RawMp4Stream(VideoStream):
 
         return VideoFrame(raw_frame_idx=self.current_frame_idx, rgb=frame_rgb)
 
-
+# we should use this for usage with ViPE cli for run.py in case uv sync does not install the right dependencies. However, we may have to change the architecture
+# the loop is inside run.py, not the ohter. 
 class RawMP4StreamList(StreamList):
     def __init__(self, base_path: str, frame_start: int, frame_end: int, frame_skip: int, cached: bool = False) -> None:
         super().__init__()
@@ -105,7 +106,7 @@ class RawMP4StreamList(StreamList):
 
     def __len__(self) -> int:
         return len(self.mp4_sequences)
-
+    # builds on get
     def __getitem__(self, index: int) -> VideoStream:
         stream: VideoStream = RawMp4Stream(self.mp4_sequences[index], seek_range=self.frame_range)
         if self.cached:

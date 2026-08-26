@@ -156,70 +156,72 @@ def main(csv_filepath):
     # nsfw = df[df[instruction_prompt[5]] < 0.8]
     # nsfw.to_csv("nsfw.csv")
     # df= df[(df[instruction_prompt[4]] < 0.2) | (df[instruction_prompt[5]] < 0.8) | (df[instruction_prompt[3]] < 0.5) | (df[instruction_prompt[2]] < 0.1) | (df[instruction_prompt[1]] < 0.5) | (df[instruction_prompt[0]] < 0.5)]             
-    combined_vtss['vlm_score'] = combined_vtss[instruction_prompt[2:4]].sum(axis=1)
+    combined_vtss['vlm_score'] = combined_vtss[instruction_prompt[4]]
+    combined_vtss = combined_vtss[combined_vtss['vlm_score'] < 0.25]
     score_density_f(combined_vtss['vlm_score']) 
 
 
-    plt.title(f"Density plot of 'vlm_score'")
-    plt.savefig(f"vlm_score.jpg", dpi=300)                                                        
-    print(f"Saved data from {length} rows")
+    print(f"Original length: {length}")
+    print(f"Length of post-processing: {len(combined_vtss)}")
 
-    # def render_score_videos_headless(df, instruction_prompt, output_dir="rendered_videos", max_videos=None):
-    #     os.makedirs(output_dir, exist_ok=True)
+    def render_score_videos_headless(df, instruction_prompt, output_dir="rendered_videos", max_videos=None):
+        os.makedirs(output_dir, exist_ok=True)
         
-    #     for idx, row in df.iloc[:max_videos].iterrows() if max_videos else df.iterrows():
-    #         video_path = row.get('video_path')
-    #         if not video_path or not os.path.exists(str(video_path)):
-    #             print(f"Skipping row {idx}: Invalid video path '{video_path}'")
-    #             continue
+        for idx, row in df.iloc[:max_videos].iterrows() if max_videos else df.iterrows():
+            video_path = row.get('video_path')
+            if not video_path or not os.path.exists(str(video_path)):
+                print(f"Skipping row {idx}: Invalid video path '{video_path}'")
+                continue
 
-    #         cap = cv2.VideoCapture(str(video_path))
-    #         if not cap.isOpened():
-    #             print(f"Error opening video: {video_path}")
-    #             continue
+            cap = cv2.VideoCapture(str(video_path))
+            if not cap.isOpened():
+                print(f"Error opening video: {video_path}")
+                continue
 
-    #         fps = cap.get(cv2.CAP_PROP_FPS) or 30
-    #         w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    #         h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            fps = cap.get(cv2.CAP_PROP_FPS) or 30
+            w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
             
-    #         out_filename = os.path.join(output_dir, f"annotated_row_{idx}.mp4")
-    #         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    #         out = cv2.VideoWriter(out_filename, fourcc, fps, (w, h))
+            out_filename = os.path.join(output_dir, f"annotated_row_{idx}.mp4")
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            out = cv2.VideoWriter(out_filename, fourcc, fps, (w, h))
 
-    #         # Format text overlay lines
-    #         lines = [f"Total VLM Score: {row['vlm_score']:.2f}", "--- Subscores ---"]
-    #         for p in instruction_prompt:
-    #             score = row.get(p, np.nan)
-    #             short_prompt = " ".join(p.split()[:5]) + "..."
-    #             lines.append(f"{short_prompt}: {score:.2f}" if pd.notnull(score) else f"{short_prompt}: N/A")
+            # Format text overlay lines
+            # lines = [f"Total VLM Score: {row['vlm_score']:.2f}", "--- Subscores ---"]
+            # note that we measure the capability of object motion, not the motion itself
+            lines = [f"Artificial-generated motion score: {row['vlm_score']:.2f}", "--- Subscores ---"]
+            for p in instruction_prompt:
+                score = row.get(p, np.nan)
+                short_prompt = " ".join(p.split()[:5]) + "..."
+                lines.append(f"{short_prompt}: {score:.2f}" if pd.notnull(score) else f"{short_prompt}: N/A")
 
-    #         while cap.isOpened():
-    #             ret, frame = cap.read()
-    #             if not ret:
-    #                 break
+            while cap.isOpened():
+                ret, frame = cap.read()
+                if not ret:
+                    break
 
-    #             # Draw semi-transparent background box
-    #             overlay = frame.copy()
-    #             box_h = 35 + len(lines) * 22
-    #             box_w = min(550, w - 20)
-    #             cv2.rectangle(overlay, (10, 10), (10 + box_w, 10 + box_h), (0, 0, 0), -1)
-    #             frame = cv2.addWeighted(overlay, 0.65, frame, 0.35, 0)
+                # Draw semi-transparent background box
+                overlay = frame.copy()
+                box_h = 35 + len(lines) * 22
+                box_w = min(550, w - 20)
+                cv2.rectangle(overlay, (10, 10), (10 + box_w, 10 + box_h), (0, 0, 0), -1)
+                frame = cv2.addWeighted(overlay, 0.65, frame, 0.35, 0)
 
-    #             # Draw text lines
-    #             y0 = 32
-    #             for i, line in enumerate(lines):
-    #                 color = (0, 255, 0) if i == 0 else (255, 255, 255)
-    #                 scale = 0.55 if i == 0 else 0.45
-    #                 cv2.putText(frame, line, (20, y0 + i * 20), cv2.FONT_HERSHEY_SIMPLEX, scale, color, 1, cv2.LINE_AA)
+                # Draw text lines
+                y0 = 32
+                for i, line in enumerate(lines):
+                    color = (0, 255, 0) if i == 0 else (255, 255, 255)
+                    scale = 0.55 if i == 0 else 0.45
+                    cv2.putText(frame, line, (20, y0 + i * 20), cv2.FONT_HERSHEY_SIMPLEX, scale, color, 1, cv2.LINE_AA)
 
-    #             out.write(frame)
+                out.write(frame)
 
-    #         cap.release()
-    #         out.release()
-    #         print(f"Saved annotated video to: {out_filename}")
+            cap.release()
+            out.release()
+            print(f"Saved annotated video to: {out_filename}")
 
-    # # Run headless video rendering
-    # render_score_videos_headless(combined_vtss, instruction_prompt, output_dir="rendered_videos")
+    # Run headless video rendering
+    render_score_videos_headless(combined_vtss, instruction_prompt, output_dir="bad_object_videos")
 
 
 

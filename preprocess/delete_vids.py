@@ -6,7 +6,7 @@ import pandas as pd
 
 if __name__ == "__main__":
 
-    input_csv_folder_path = "/scratch/uft5by/OpenVid-1M/csv/general_dataset_scoring_vlm"
+    input_csv_folder_path = "/scratch/uft5by/OpenVid-1M/csv/general_dataset_scoring_vlm_left"
     video_folder = "/scratch/uft5by/OpenVid-1M/videos"
 
     pattern = os.path.join(input_csv_folder_path, "sub*.csv")

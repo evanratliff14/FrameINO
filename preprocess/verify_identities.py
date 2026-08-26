@@ -167,7 +167,7 @@ def _iou(a, b) -> float:
     return float(inter) / float(union) if union > 0 else 0.0
 
 
-def _parse_bboxes(text: str):
+def _parse_bboxes(text: str, canvas_h: int, canvas_w: int):
     text = text.strip()
     # strip optional markdown fences
     if "```" in text:
@@ -219,7 +219,7 @@ def verify_identities(video_path, vipe_output_filepath, llm, processor, sampling
     masks = VipeMasks(vipe_output_filepath)
     instance_masks = [
         im
-        for im in masks.get_masks()
+        for im in masks.get_masks().values()
         if int(im.instance_id) > 0 and im.phrase.strip().lower() not in SKIP_PHRASES
     ]
 
@@ -271,8 +271,8 @@ def verify_identities(video_path, vipe_output_filepath, llm, processor, sampling
     generated_text = out[0].outputs[0].text
 
     os.remove(tmp_path)
-
-    boxes = _parse_bboxes(generated_text)
+    canvas_h, canvas_w = collage.shape[0], collage.shape[1]
+    boxes = _parse_bboxes(generated_text, canvas_h, canvas_w)
     matched = map_boxes_to_ids(boxes, id_to_tile_rect)
     return {iid: first_frames[iid] for iid in matched if iid in first_frames}
 
